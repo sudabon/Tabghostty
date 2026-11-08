@@ -1,0 +1,2 @@
+# Tabghostty
+Libghosttyベースのタブ型ターミナルアプリ
