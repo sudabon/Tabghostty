@@ -27,12 +27,17 @@ The terminal engine SHALL support resizing to a new column and row count togethe
 
 ### Requirement: Configurable scrollback limit
 
-The terminal engine SHALL retain at most the configured number of scrollback lines (`scrollback_lines`, default 10000) and discard older lines.
+The terminal engine SHALL expose at most the configured number of scrollback lines (`scrollback_lines`, default 10000) above the visible screen. Lines older than that SHALL NOT be reachable through scrollback navigation, search, or text extraction. Because libghostty-vt discards scrollback only in whole pages, the engine MAY keep more lines than configured in memory; it SHALL still bound that memory by the configured line limit (page-granular).
 
 #### Scenario: Limit enforced
 
 - **WHEN** a terminal configured with 100 scrollback lines receives 500 lines of output
-- **THEN** at most 100 lines are retained above the visible screen
+- **THEN** at most 100 lines are reported as available above the visible screen
+
+#### Scenario: Older lines are not reachable
+
+- **WHEN** more lines than the limit have scrolled off the screen
+- **THEN** scrolling, search, and text extraction do not reach lines beyond the most recent `scrollback_lines` lines, even if the engine still holds them in memory
 
 ### Requirement: Serialized access per terminal
 

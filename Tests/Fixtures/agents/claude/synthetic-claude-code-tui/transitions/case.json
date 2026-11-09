@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "command": "claude"
+  },
+  "steps": [
+    {
+      "name": "working",
+      "byte_start": 0,
+      "byte_end": 129,
+      "advance_ms": 120,
+      "expect": {
+        "agent_id": "claude",
+        "state": "working",
+        "signal": "screen",
+        "change_count": 2
+      },
+      "output_bytes": 40
+    },
+    {
+      "name": "blocked",
+      "byte_start": 129,
+      "byte_end": 242,
+      "advance_ms": 120,
+      "expect": {
+        "agent_id": "claude",
+        "state": "blocked",
+        "signal": "screen",
+        "change_count": 3
+      },
+      "output_bytes": 4
+    },
+    {
+      "name": "idle",
+      "byte_start": 242,
+      "byte_end": 325,
+      "advance_ms": 1620,
+      "expect": {
+        "agent_id": "claude",
+        "state": "idle",
+        "signal": "screen",
+        "change_count": 5
+      },
+      "output_bytes": 4
+    },
+    {
+      "name": "unknown",
+      "byte_start": 325,
+      "byte_end": 440,
+      "advance_ms": 1620,
+      "expect": {
+        "agent_id": "claude",
+        "state": "idle",
+        "signal": "screen",
+        "change_count": 5
+      },
+      "output_bytes": 4
+    }
+  ]
+}

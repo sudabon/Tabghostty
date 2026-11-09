@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "command": "agent",
+    "executable": "agent"
+  },
+  "steps": [
+    {
+      "name": "feed",
+      "advance_ms": 120,
+      "expect": {
+        "agent_id": "cursor-agent",
+        "state": "working",
+        "signal": "activity",
+        "change_count": 2
+      },
+      "byte_end": 160,
+      "byte_start": 0,
+      "output_bytes": 40
+    }
+  ]
+}

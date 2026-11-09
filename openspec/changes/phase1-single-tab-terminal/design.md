@@ -99,6 +99,8 @@ Tabghostty (@main, AppDelegate, MainWindowController)          @MainActor
 - spec のシナリオ（replay 中の DA / DSR 応答を抑止する）は、モックの WebSocket サーバーを使ったテストで保証する（D7）。
 - （Phase 0 の調査結果、`Sources/TerminalCore/README.md`）サイズの問い合わせ（`CSI 14/16/18/19 t`）に応答させるには、`GHOSTTY_TERMINAL_OPT_SIZE` の callback を登録し、最後に `ghostty_terminal_resize` に渡した cols / rows / セルのピクセルサイズを返す必要がある。未登録だとライブラリは黙って無視する。
 - 同じく、スクロールバックの上限は既定で 10,000 バイト（実際には 1 ページ）なので、`GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES = SIZE_MAX` と `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES = scrollback_lines` を設定する。
+  - 行数の上限を設定しても、libghostty が削除するのはページ単位なので、内部には上限より多くの行が残る（2026-11-09 の計測: 上限 100 行・80 列で 500 行を流すと 477 行残る）。
+  - そのため、spec は「保持する」ではなく「見せる」行数を上限にする（2026-11-09 の判断）。`VTTerminal.scrollbackRows` は上限で丸めた行数を返す。Phase 2 のスクロール（viewport を動かせる範囲）と Phase 5 の検索・テキストの取り出しも、最新の `scrollback_lines` 行より古い行に届かないよう、この値で範囲を丸める。
 
 ### D3. attach、再接続、overflow
 

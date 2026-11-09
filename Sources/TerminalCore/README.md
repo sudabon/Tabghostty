@@ -34,7 +34,7 @@ libghostty-vt（C API）の Swift ラッパー。
 | リサイズ | Terminal.Resize | `ghostty_terminal_resize(terminal, cols, rows, cell_width_px, cell_height_px)` | `terminal.h` | セルのピクセルサイズも同時に渡す。render hold も解除される。Phase 1 |
 | リセット | Terminal.Reset | `ghostty_terminal_reset(terminal)` | `terminal.h` | 完全リセット（RIS 相当）。Phase 1 |
 | 設定 / effect の登録 | Terminal options | `ghostty_terminal_set(terminal, GhosttyTerminalOption, value)` | `terminal.h` | `NULL` を渡すと既定値に戻る。effect の一覧は後述 |
-| 状態の取得 | — | `ghostty_terminal_get` / `ghostty_terminal_get_multi`（`GHOSTTY_TERMINAL_DATA_*`） | `terminal.h` | 次のような値を取れる: COLS / ROWS、CURSOR_*、ACTIVE_SCREEN、KITTY_KEYBOARD_FLAGS、MOUSE_TRACKING、SCROLLBAR、SELECTION、MODE、TITLE、PWD、MOUSE_SHAPE、MEMORY_USAGE、VIEWPORT_ACTIVE |
+| 状態の取得 | — | `ghostty_terminal_get` / `ghostty_terminal_get_multi`（`GHOSTTY_TERMINAL_DATA_*`） | `terminal.h` | 次のような値を取れる: COLS / ROWS、CURSOR_*、ACTIVE_SCREEN、KITTY_KEYBOARD_FLAGS、MOUSE_TRACKING、SCROLLBAR、SELECTION、MODE、TITLE、PWD、MOUSE_SHAPE、MEMORY_USAGE、VIEWPORT_ACTIVE、TOTAL_ROWS、SCROLLBACK_ROWS（`size_t`。Phase 1 でスクロールバックの行数に使う） |
 | viewport のスクロール | — | `ghostty_terminal_scroll_viewport(terminal, GhosttyTerminalScrollViewport)` | `terminal.h` | TOP / BOTTOM / DELTA（上が負）/ ROW / DELTA_PROMPT（OSC 133 が必要）。Phase 2 |
 | 最大スクロールバック | max scrollback | `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`（`size_t*`）と `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES`（`size_t*`） | `terminal.h` | **既定ではバイト数の上限が 10,000 バイト**（実際には 1 ページ、約 400 KB）で、行数の上限は無い。`scrollback_lines` を反映するには、`MAX_BYTES = SIZE_MAX` にしたうえで `MAX_LINES` を設定する。削除はページ単位なので、実際に残る行数は設定値より多くなる |
 | セル / 行の参照 | — | `ghostty_terminal_grid_ref` / `ghostty_grid_ref_cell` / `_row` / `_graphemes` / `_style` / `_hyperlink_uri` | `terminal.h`, `grid_ref.h` | 参照は次に Terminal を変更するまでしか有効でない。変更を越えて追跡するなら `ghostty_terminal_grid_ref_track`（`grid_ref_tracked.h`） |
@@ -47,12 +47,12 @@ libghostty-vt（C API）の Swift ラッパー。
 | effect | Go 名 | オプション / callback の型 | 備考（Tabghostty での扱い） |
 |---|---|---|---|
 | PTY への書き戻し（DA / DSR / サイズ報告 / モード問い合わせ / kitty の応答） | WritePty | `GHOSTTY_TERMINAL_OPT_WRITE_PTY` / `GhosttyTerminalWritePtyFn(terminal, userdata, data, len)` | `data` は callback の間だけ有効なので、コピーしてキューに積む。live のときだけ `input` で送る（Phase 1） |
-| ベル | Bell | `GHOSTTY_TERMINAL_OPT_BELL` / `GhosttyTerminalBellFn` | 無視する（Phase 1 の決定） |
-| タイトルの変更 | TitleChanged | `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` / `GhosttyTerminalTitleChangedFn` | 新しい値は `GHOSTTY_TERMINAL_DATA_TITLE` で読む。無視する |
+| ベル | Bell | `GHOSTTY_TERMINAL_OPT_BELL` / `GhosttyTerminalBellFn` | 登録してキューに積み、`TerminalController` で捨てる（Phase 1 の決定。音も Dock も鳴らさない） |
+| タイトルの変更 | TitleChanged | `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED` / `GhosttyTerminalTitleChangedFn` | 新しい値は `GHOSTTY_TERMINAL_DATA_TITLE` で読む。登録してキューに積み、捨てる（タブ名はデーモンの cwd / command から作る） |
 | 作業ディレクトリの変更（OSC 7 / 9 / 1337 CurrentDir） | — | `GHOSTTY_TERMINAL_OPT_PWD_CHANGED` / `GhosttyTerminalPwdChangedFn` | 使わない（cwd はデーモンから受け取る） |
 | クリップボードへの書き込み（OSC 52 / OSC 1337 Copy / OSC 5522） | Clipboard write | `GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE` / `GhosttyTerminalClipboardWriteFn`（`GhosttyClipboardWriteReplyFn` で結果を返す）。上限は `GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES` | live のときだけ `NSPasteboard` に書く（Phase 2） |
 | クリップボードの読み取り（OSC 52 `?`） | Clipboard read | `GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ` / `GhosttyTerminalClipboardReadFn`（`GhosttyClipboardReadReplyFn`） | 同期的に呼ばれ、callback の中で応答しなければならない。常に拒否する（Phase 2） |
-| デスクトップ通知（OSC 9 / OSC 777） | Desktop notification | `GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION` / `GhosttyTerminalDesktopNotificationFn` | 登録しない（`NULL` なら無視される）。通知はデーモンに任せる |
+| デスクトップ通知（OSC 9 / OSC 777） | Desktop notification | `GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION` / `GhosttyTerminalDesktopNotificationFn`（`GhosttyTerminalDesktopNotification` の title / body は callback の間だけ有効） | 登録してキューに積み、捨てる（Phase 1）。通知はデーモンの `notify` に任せる。OSC 99 は libghostty が扱わない |
 | 進捗報告（OSC 9;4） | Progress report | `GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT` / `GhosttyTerminalProgressReportFn` | 登録しない |
 | セマンティックプロンプト（OSC 133） | Semantic prompt | `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT` / `GhosttyTerminalSemanticPromptFn` | 任意。プロンプトの間を移動する機能に使える |
 | render hold（同期出力 DECSET 2026） | — | `GHOSTTY_TERMINAL_OPT_RENDER_HOLD` / `GhosttyTerminalRenderHoldFn(…, bool held)` | 開始と終了が必ず対で呼ばれる。リサイズとリセットでも解除される。Phase 5 |
@@ -62,7 +62,8 @@ libghostty-vt（C API）の Swift ラッパー。
 | 配色の問い合わせ（`CSI ? 996 n`） | — | `GHOSTTY_TERMINAL_OPT_COLOR_SCHEME` / `GhosttyTerminalColorSchemeFn` | NULL なら無視する。Phase 4 で、解決済みの配色を返すように登録してもよい |
 | ENQ（0x05） | — | `GHOSTTY_TERMINAL_OPT_ENQUIRY` / `GhosttyTerminalEnquiryFn` | NULL なら応答しない。登録しない |
 | その他 | — | `OPT_TITLE_REPORT`（既定で無効）、`OPT_PROGRAM_STATUS`（NULL なら応答しない）、`OPT_RESIZE_WINDOW` / `OPT_RESET` / `OPT_UNKNOWN_SEQUENCE`（NULL なら無視する） | 登録しない。必要になったら、その Phase で追記する |
-| 既定の色 | — | `OPT_COLOR_FOREGROUND` / `_BACKGROUND` / `_CURSOR` / `_PALETTE` | Tabghostty の配色を設定する（Phase 1）。OSC 10/11/12 には、デーモンが応答する |
+| 既定の色 | — | `OPT_COLOR_FOREGROUND` / `_BACKGROUND` / `_CURSOR`（`GhosttyColorRgb*`）/ `_PALETTE`（`GhosttyColorRgb[256]`） | Tabghostty の配色を設定する（Phase 1）。OSC 10/11/12 には、デーモンが応答する。`ghostty_terminal_reset` の後も残るが、念のため attach のたびに設定し直す |
+| 既定のカーソル | — | `GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE`（`GhosttyCursorStyle*`）/ `GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK`（`bool*`） | DECSCUSR 0 で戻る形と点滅。Phase 1 で「点滅するブロック」にする（xterm.js の `cursorBlink: true` と同じ） |
 | Kitty Graphics の設定 | — | `OPT_KITTY_IMAGE_STORAGE_LIMIT` / `_MEDIUM_FILE` / `_MEDIUM_TEMP_FILE` / `_MEDIUM_SHARED_MEM`、`OPT_APC_MAX_BYTES(_KITTY)` | Phase 5 |
 
 ### RenderState（描画）
@@ -71,12 +72,12 @@ libghostty-vt（C API）の Swift ラッパー。
 |---|---|---|---|---|
 | 生成 / 解放 | RenderState | `ghostty_render_state_new` / `ghostty_render_state_free` | `render.h` | Phase 1 |
 | 更新 | RenderState.Update | `ghostty_render_state_update(state, terminal)`、または `_begin_update` と `_end_update` | `render.h` | Terminal を使うのは更新している間だけ。更新後のデータは Terminal とは独立して読める |
-| dirty | — | `GHOSTTY_RENDER_STATE_DATA_DIRTY`（`FALSE` / `PARTIAL` / `FULL`）、行の `GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY`、`ghostty_render_state_row_iterator_next_dirty`、`ghostty_render_state_clean` | `render.h` | 描画したら `clean` する |
+| dirty | — | `GHOSTTY_RENDER_STATE_DATA_DIRTY`（`FALSE` / `PARTIAL` / `FULL`）、行の `GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY`、`ghostty_render_state_row_iterator_next_dirty`、`ghostty_render_state_clean`、全体を描き直させる `ghostty_render_state_set(GHOSTTY_RENDER_STATE_OPT_DIRTY, &FULL)` | `render.h` | 描画したら `clean` する |
 | 行 | — | `ghostty_render_state_row_iterator_new` / `_next` / `ghostty_render_state_row_get`（`ROW_DATA_CELLS` / `SELECTION` / `VIEWPORT_Y` / `ID`） | `render.h` | |
-| セル | — | `ghostty_render_state_row_cells_new` / `_next` / `_select(x)` / `ghostty_render_state_row_cells_get`（`STYLE` / `GRAPHEMES_LEN` / `GRAPHEMES_BUF` / `BG_COLOR` / `FG_COLOR` / `SELECTED` / `HAS_STYLING`） | `render.h` | wide 文字かどうかと幅は、`RAW` のセルから `ghostty_cell_get`（`screen.h`）で読む |
+| セル | — | `ghostty_render_state_row_cells_new` / `_next` / `_select(x)` / `ghostty_render_state_row_cells_get`（`RAW` / `STYLE` / `GRAPHEMES_LEN` / `GRAPHEMES_BUF` / `GRAPHEMES_UTF8`（`GhosttyBuffer`。足りなければ `GHOSTTY_OUT_OF_SPACE` と必要な長さ）/ `BG_COLOR` / `FG_COLOR` / `SELECTED` / `HAS_STYLING`） | `render.h` | wide 文字かどうかと幅は、`RAW` のセルから `ghostty_cell_get`（`screen.h`）で読む |
 | スタイル | — | `GhosttyStyle`、`ghostty_style_default` / `ghostty_style_is_default` | `style.h` | |
 | 色 | — | `GHOSTTY_RENDER_STATE_DATA_COLOR_BACKGROUND` / `_FOREGROUND` / `_CURSOR` / `_PALETTE` / `COLORS`、`ghostty_color_rgb_get`、`ghostty_color_contrast` / `ghostty_color_luminance` | `render.h`, `color.h` | コントラストの補正（Phase 1）に `ghostty_color_contrast` が使える |
-| カーソル | — | `GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE` / `_VISIBLE` / `_BLINKING` / `_VIEWPORT_X` / `_VIEWPORT_Y` / `_VIEWPORT_WIDE_TAIL` / `_PASSWORD_INPUT` | `render.h` | |
+| カーソル | — | `GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE` / `_VISIBLE` / `_BLINKING` / `_VIEWPORT_X` / `_VIEWPORT_Y` / `_VIEWPORT_WIDE_TAIL` / `_PASSWORD_INPUT`、まとめて取る `GHOSTTY_RENDER_STATE_DATA_CURSOR`（`GhosttyRenderStateCursor`。サイズ付き構造体） | `render.h` | |
 | オーバースキャン | — | `GHOSTTY_RENDER_STATE_OPT_OVERSCAN`、`DATA_OVERSCAN` | `render.h` | スムーズスクロールに使える（任意） |
 | 画像の配置 | — | `ghostty_render_state_image_iterator_new` / `_next` / `ghostty_render_state_image_get`、`DATA_IMAGE_PLACEMENTS_GENERATION` | `render.h` | Phase 5 |
 
@@ -125,7 +126,7 @@ libghostty-vt（C API）の Swift ラッパー。
 | Sixel | **なし**。描画も解釈もしない。ヘッダにある Sixel の記述は、DA の機能番号 `GHOSTTY_DA_FEATURE_SIXEL`（`device.h`）だけ | Phase 5 の spec（inline-images）のとおり対応外とする。Phase 7 で README の対応表から外す |
 | iTerm2 IIP（OSC 1337 File） | **なし**。OSC 1337 で扱うのは `Copy`（クリップボードへの書き込み）と `CurrentDir`（作業ディレクトリ）だけ | 同上 |
 | C API の正確な名前 | この表のとおり | Phase 1 以降は、この表の名前を使う |
-| スクロールバックの上限 | 既定はバイト数での上限（10,000 バイト、実際には 1 ページ）で、行数の上限は無い | Phase 1 で `MAX_BYTES = SIZE_MAX` と `MAX_LINES = scrollback_lines` を設定する |
+| スクロールバックの上限 | 既定はバイト数での上限（10,000 バイト、実際には 1 ページ）で、行数の上限は無い。行数の上限を設定しても削除はページ単位なので、2026-11-09 の計測では「上限 100 行・80 列で 500 行を流すと 477 行残る」 | Phase 1 で `MAX_BYTES = SIZE_MAX` と `MAX_LINES = scrollback_lines` を設定する。利用者に見せる行数は `VTTerminal.scrollbackRows` で上限に丸める（spec は「見せる行数が上限まで」。スクロール・検索・テキストの取り出しも、この値で範囲を丸める。phase1 の design D2） |
 | サイズの問い合わせへの応答 | `GHOSTTY_TERMINAL_OPT_SIZE` を登録しないと、`CSI 14/16/18/19 t` は無視される | Phase 1 でこの callback を登録する（phase1 の design D2 に追記済み） |
 
 ### SPEC が想定していなかったが C API にある機能

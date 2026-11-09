@@ -1,0 +1,24 @@
+[?1049h[H[2J
+
+
+
+
+
+
+
+
+
+
+
+
+
+Would you like to make the following edits?
+
+internal/profile/service.go
+  +12 -3
+internal/httpapi/profile.go
+  +4 -0
+
+  1. Yes, proceed (y)
+› 2. Yes, and don't ask again for these files (p)
+  3. No, and tell Codex what to do differently (esc)

@@ -27,6 +27,45 @@ make test    # テストを実行する（Swift Testing）
 - `make deps` は、`scripts/libghostty.lock` に記録したバージョンと SHA-256 で検証します。検証済みのものがすでに置かれていれば、何もしません。
 - `make build` / `make test` を `make deps` より前に実行すると、「先に `make deps` を実行してください」と表示して止まります。
 - `Vendor/GhosttyVt.xcframework` は git 管理外です。
+- `make test-tsan` で、Thread Sanitizer 付きでテストを実行できます（端末への並行アクセスの検査）。
+
+### アプリを作る（`make app`）
+
+```bash
+make app                                          # ../webtabinal をビルドして同梱し、build/Tabghostty.app を作る
+WEBTABINAL_DIR=~/src/webtabinal make app          # webtabinal のチェックアウトの場所を指定する
+WEBTABINAL_DAEMON=/path/to/webtabinal make app    # ビルド済みのデーモンを同梱する（webtabinal はビルドしない）
+open build/Tabghostty.app
+```
+
+- `build/Tabghostty.app/Contents/MacOS/webtabinal-daemon` に、webtabinal のデーモンを同梱します。起動したときにデーモンが動いていなければ、これを `webtabinal-daemon serve` として起動します（アプリを終了してもデーモンは残ります）。ログは `~/Library/Logs/WebTabinal/daemon.stdio.log` に追記されます。
+- デーモンの取得元は、次の順に決まります。
+  - `WEBTABINAL_DAEMON`: ビルド済みのデーモンのパス。指定すると webtabinal はビルドしません。
+  - `WEBTABINAL_DIR`: webtabinal のチェックアウト（既定は `../webtabinal`）。`make -C "$WEBTABINAL_DIR" build`（Go と Node.js が要ります）を実行し、`bin/webtabinal` を同梱します。
+  - どちらも無ければ、2 つの変数名を出して失敗します。
+- 同梱した webtabinal のコミットは、`Info.plist` の `TabghosttyDaemonRevision` に記録されます（ビルド済みのデーモンを使ったときは `prebuilt`）。
+- バンドル ID は `com.tabghostty.app` で、WebTabinal.app（`com.webtabinal.app`）とは別のアプリとして同時に動かせます。
+- 署名は ad-hoc です。
+- すでに別のデーモン（たとえば WebTabinal.app が起動したもの）が動いていれば、それにつなぎます。同梱したデーモンに入れ替えたいときは、先に `pkill -f 'webtabinal-daemon serve'` で止めてください（セッションも終了します）。
+
+### `swift run` で動かす
+
+`.app` にしないで動かすときは、デーモンの場所を `TABGHOSTTY_DAEMON_PATH` で指定します（デーモンがすでに動いていれば不要です）。
+
+```bash
+TABGHOSTTY_DAEMON_PATH=../webtabinal/bin/webtabinal swift run Tabghostty
+```
+
+### フィクスチャ（`make fixtures`）
+
+`Tests/Fixtures/agents/` は、webtabinal の `tests/fixtures/agents` のコピーです（エージェントの出力を記録したストリーム）。テストはコミット済みのコピーを使うので、テストの実行に webtabinal は要りません。
+
+```bash
+make fixtures                                     # ../webtabinal から取り込み直す
+WEBTABINAL_DIR=~/src/webtabinal make fixtures     # webtabinal の場所を指定する
+```
+
+コピー元のコミットは `Tests/Fixtures/SOURCE` に記録されます。
 
 ### libghostty-vt のバージョンを上げるとき
 

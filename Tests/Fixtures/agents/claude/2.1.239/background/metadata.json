@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "agent": "claude",
+  "version": "2.1.239",
+  "scenario": "background",
+  "rows": 24,
+  "columns": 80,
+  "term": "xterm-256color",
+  "locale": "en_US.UTF-8",
+  "platform": "synthetic",
+  "capture_tool_version": "record-agent-fixture/1",
+  "reviewed": true,
+  "osc": {
+    "osc0": false,
+    "osc9": false,
+    "osc99": false,
+    "osc777": false
+  },
+  "notes": "Synthetic reconstruction of a captured Claude Code 2.1.239 background-execution line: '✻ Churned for 30m 19s · 2 shells still running'. Not a live PTY capture."
+}
