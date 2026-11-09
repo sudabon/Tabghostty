@@ -302,8 +302,10 @@ public final class TerminalView: NSView {
     private var defaultForeground: ColorRGB { frameColors?.foreground ?? palette.foreground }
     private var defaultBackground: ColorRGB { frameColors?.background ?? palette.background }
 
-    private func drawCells(in rect: NSRect, context: CGContext) {
-        guard rows > 0, cols > 0 else { return }
+    private func drawCells(in dirtyRect: NSRect, context: CGContext) {
+        // 描画の範囲がビューより大きく渡されることがある（オフスクリーンの描画など）。行・列に直す前に bounds に収める。
+        let rect = dirtyRect.intersection(bounds)
+        guard rows > 0, cols > 0, !rect.isNull, !rect.isEmpty else { return }
         let firstRow = max(0, Int(((rect.minY - padding) / metrics.height).rounded(.down)))
         let lastRow = min(rows - 1, Int(((rect.maxY - padding) / metrics.height).rounded(.up)))
         // 2 セル幅の文字が範囲の手前から始まることがあるので、1 セル広げる。
@@ -454,6 +456,9 @@ public final class TerminalView: NSView {
             let runFont = runAttributes[kCTFontAttributeName as String].map { $0 as! CTFont } ?? key.font
 
             // セルの中での相対位置（結合文字など）は保ち、セルの先頭はグリッドに合わせる。
+            //
+            // CTFontDrawGlyphs の位置はテキスト空間の座標で、テキスト行列（上下を反転している。`draw(_:)`）を通して
+            // ビューの座標になる。ビューの y（下向き）を渡すとビューの外（上）に描かれてしまうので、y の符号を反転して渡す。
             var cellOrigin: [Int: CGFloat] = [:]
             var placed = [CGPoint](repeating: .zero, count: count)
             for index in 0..<count {
@@ -461,9 +466,10 @@ public final class TerminalView: NSView {
                 let column = columnForUTF16[utf16Index]
                 let origin = cellOrigin[column] ?? positions[index].x
                 cellOrigin[column] = origin
+                let viewY = baseline - positions[index].y
                 placed[index] = CGPoint(
                     x: padding + CGFloat(column) * metrics.width + (positions[index].x - origin),
-                    y: baseline - positions[index].y
+                    y: -viewY
                 )
             }
             CTFontDrawGlyphs(runFont, glyphs, placed, count, context)
