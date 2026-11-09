@@ -1,6 +1,7 @@
 import AppKit
 import Testing
 @testable import TabghosttyApp
+import TerminalUI
 
 /// spec: terminal-clipboard「Edit menu」。
 @MainActor
@@ -70,5 +71,20 @@ import Testing
         }
         #expect(items.count == 11)
         #expect(items.allSatisfy { !delegate.validateMenuItem($0) })
+    }
+}
+
+/// spec: terminal-search「Find bar」「Match navigation」— Edit メニューの検索。
+@MainActor
+@Suite struct FindMenuTests {
+    @Test func editMenuHasFindItems() throws {
+        let menu = AppMenu.make()
+        let edit = try #require(menu.items.compactMap(\.submenu).first { $0.title == "Edit" })
+        let find = try #require(edit.items.first { $0.action == #selector(TerminalFindActions.showFindBar(_:)) })
+        #expect(find.keyEquivalent == "f" && find.keyEquivalentModifierMask == .command && find.target == nil)
+        let next = try #require(edit.items.first { $0.action == #selector(TerminalFindActions.findNext(_:)) })
+        #expect(next.keyEquivalent == "g" && next.keyEquivalentModifierMask == .command)
+        let previous = try #require(edit.items.first { $0.action == #selector(TerminalFindActions.findPrevious(_:)) })
+        #expect(previous.keyEquivalent == "g" && previous.keyEquivalentModifierMask == [.command, .shift])
     }
 }

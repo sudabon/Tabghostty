@@ -132,14 +132,15 @@ public actor WSConnection: TerminalFrameSink {
             } catch {
                 return
             }
-            let data: Data
+            let decoded: ServerFrame?
             switch message {
-            case .string(let text): data = Data(text.utf8)
-            case .data(let bytes): data = bytes
+            case .string(let text): decoded = ServerFrame.decode(Data(text.utf8))
+            // output / replay のバイナリのメッセージ（attach で `binary: true` を宣言した sid だけ。phase6 design D3 / D4）。
+            case .data(let bytes): decoded = ServerFrame.decode(binaryMessage: bytes)
             @unknown default: continue
             }
-            // JSON として読めないものや未知の種類は、接続を切らずに無視する。
-            guard let frame = ServerFrame.decode(data) else { continue }
+            // 読めないものや未知の種類は、接続を切らずに無視する。
+            guard let frame = decoded else { continue }
             if case .unknown = frame { continue }
             await handler(.frame(frame))
         }

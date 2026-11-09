@@ -154,9 +154,11 @@ public final class SessionCoordinator {
     private nonisolated func route(_ frame: ServerFrame) async {
         switch frame {
         case .replay(let sid, let data, let done):
-            await registry[sid]?.receiveReplay(data, done: done)
+            // 書き込みは待たない。大量の出力を書き込んでいるセッションがあっても、次のフレーム（ほかのセッションの
+            // エコーなど）をすぐに読む。セッションごとの順序は、そのセッションの端末が保つ（phase5 design D2）。
+            registry[sid]?.enqueueReplay(data, done: done)
         case .output(let sid, let data):
-            await registry[sid]?.receiveOutput(data)
+            registry[sid]?.enqueueOutput(data)
         case .error(let sid, let code, let message):
             if code == "attach_overflow", let sid, let controller = registry[sid] {
                 await controller.handleAttachOverflow()

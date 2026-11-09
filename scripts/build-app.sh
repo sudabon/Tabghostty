@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# build/Tabghostty.app を作る（design D8）。
+# build/Tabghostty.app を作る（design D8、phase6 design D7）。
 #
-#   make app                                        ../webtabinal をビルドして同梱する
-#   WEBTABINAL_DIR=/path/to/webtabinal make app     webtabinal のチェックアウトを指定する
-#   WEBTABINAL_DAEMON=/path/to/webtabinal make app  ビルド済みのデーモンを同梱する（webtabinal はビルドしない）
+#   make app                                        daemon/ を ghostty タグでビルドして同梱する（Web 版の画面は ../webtabinal から）
+#   WEBTABINAL_DIR=/path/to/webtabinal make app     Web 版の画面をビルドする webtabinal のチェックアウトを指定する
+#   WEBTABINAL_DAEMON=/path/to/webtabinal make app  ビルド済みのデーモンを同梱する（daemon/ はビルドしない）
 #
 # デーモンは Contents/MacOS/webtabinal-daemon として置く。Info.plist の TabghosttyDaemonRevision に、
-# 同梱した webtabinal のコミット（ビルド済みのバイナリを使ったときは prebuilt）を記録する。
+# 同梱したデーモンの出どころ（tabghostty-<コミット>。ビルド済みのバイナリを使ったときは prebuilt）を記録する。
+# webtabinal は Web 版の画面（web/dist。webtabinal では gitignore 済み）のビルドにだけ使い、ソースは変えない。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,27 +16,40 @@ APP_NAME="Tabghostty"
 BUNDLE_ID="com.tabghostty.app"
 OUTPUT_DIR="$ROOT/build"
 APP="$OUTPUT_DIR/$APP_NAME.app"
+STATIC_DIST="$ROOT/daemon/internal/static/dist"
 
 die() { echo "build-app: $*" >&2; exit 1; }
+warn() { echo "build-app: 警告: $*" >&2; }
 
-# 1. デーモンを用意する（Swift のビルドより先に、取得元が無いことを知らせる）。
+# Web 版の画面を daemon/internal/static/dist に置く（無ければプレースホルダの画面のまま）。
+prepare_web_ui() {
+  find "$STATIC_DIST" -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
+  if [[ -f "$WEBTABINAL_DIR/web/package.json" ]]; then
+    echo "build-app: Web 版の画面をビルドします: $WEBTABINAL_DIR/web"
+    npm --prefix "$WEBTABINAL_DIR/web" run build
+    [[ -f "$WEBTABINAL_DIR/web/dist/index.html" ]] || die "Web 版の画面のビルド結果が見つかりません: $WEBTABINAL_DIR/web/dist"
+    cp -R "$WEBTABINAL_DIR/web/dist/." "$STATIC_DIST/"
+  else
+    warn "webtabinal のチェックアウトが無いので、ブラウザ版の画面はプレースホルダになります（WEBTABINAL_DIR で指定できます。既定値: $ROOT/../webtabinal）。"
+  fi
+}
+
+# 1. デーモンを用意する（Swift のビルドより先に、失敗を知らせる）。
 if [[ -n "${WEBTABINAL_DAEMON:-}" ]]; then
   [[ -f "$WEBTABINAL_DAEMON" && -x "$WEBTABINAL_DAEMON" ]] \
     || die "WEBTABINAL_DAEMON に指定したファイルが無いか、実行できません: $WEBTABINAL_DAEMON"
   DAEMON="$WEBTABINAL_DAEMON"
   DAEMON_REVISION="prebuilt"
-elif [[ -f "$WEBTABINAL_DIR/Makefile" && -d "$WEBTABINAL_DIR/cmd/webtabinal" ]]; then
-  echo "build-app: webtabinal をビルドします: $WEBTABINAL_DIR"
-  make -C "$WEBTABINAL_DIR" build
-  DAEMON="$WEBTABINAL_DIR/bin/webtabinal"
-  [[ -x "$DAEMON" ]] || die "webtabinal のビルド結果が見つかりません: $DAEMON"
-  DAEMON_REVISION="$(git -C "$WEBTABINAL_DIR" rev-parse HEAD 2>/dev/null)" \
-    || die "webtabinal のコミットを取得できません: $WEBTABINAL_DIR"
-  if [[ -n "$(git -C "$WEBTABINAL_DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+else
+  prepare_web_ui
+  echo "build-app: デーモンを daemon/ から ghostty タグでビルドします"
+  make -C "$ROOT" daemon
+  DAEMON="$ROOT/daemon/bin/webtabinal"
+  [[ -x "$DAEMON" ]] || die "デーモンのビルド結果が見つかりません: $DAEMON"
+  DAEMON_REVISION="tabghostty-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [[ -n "$(git -C "$ROOT" status --porcelain -- daemon 2>/dev/null)" ]]; then
     DAEMON_REVISION="$DAEMON_REVISION-dirty"
   fi
-else
-  die "webtabinal のデーモンを用意できません。WEBTABINAL_DAEMON にビルド済みのバイナリを指定するか、WEBTABINAL_DIR に webtabinal のチェックアウトを指定してください（WEBTABINAL_DIR の既定値: $ROOT/../webtabinal）。"
 fi
 
 # 2. Tabghostty をビルドする。
@@ -101,4 +115,4 @@ codesign --force --sign - "$STAGED_APP"
 
 rm -rf "$APP"
 mv "$STAGED_APP" "$APP"
-echo "build-app: ${APP}（webtabinal: ${DAEMON_REVISION}）"
+echo "build-app: ${APP}（デーモン: ${DAEMON_REVISION}）"

@@ -64,6 +64,10 @@ public final class VTTerminal {
     /// `GHOSTTY_TERMINAL_OPT_SIZE` の callback が返す値（最後に `resize` に渡した値）。
     fileprivate var sizeReport: GhosttySizeReportSize
 
+    /// プログラムが同期出力（DECSET 2026）で画面の更新を止めている（render hold。phase5 design D4）。
+    /// 解除（DECRST 2026）、RIS、`reset()`、`resize` で false に戻る。
+    public fileprivate(set) var isRenderHeld = false
+
     private var keyEncoder: KeyEncoder?
     /// マウスエンコーダ（最初のマウスの報告で作る）。
     var mouseEncoder: MouseEncoder?
@@ -71,6 +75,8 @@ public final class VTTerminal {
     var selectionGesture: SelectionGesture?
     /// 描画用の RenderState（`makeSnapshot` で初めて作る）。
     var renderReader: RenderStateReader?
+    /// 検索（最初の検索で作る。phase5 design D5）。
+    var searcher: TerminalSearcher?
 
     /// - Parameters:
     ///   - cols: 列数（1〜65535）
@@ -81,6 +87,8 @@ public final class VTTerminal {
     public init(cols: Int, rows: Int, maxScrollback: Int, cellWidthPx: Int = 0, cellHeightPx: Int = 0) throws {
         Self.checkGrid(cols: cols, rows: rows)
         precondition(maxScrollback >= 0, "maxScrollback must not be negative")
+        // PNG の展開などのプロセス全体の設定は、最初の端末を作る前に済ませる（2 回目以降は何もしない）。
+        GhosttySystem.install()
 
         var created: GhosttyTerminal?
         try Self.check(
@@ -101,6 +109,7 @@ public final class VTTerminal {
 
         try installCallbacks()
         try setMaxScrollback(lines: maxScrollback)
+        configureKittyGraphics()
         if cellWidthPx > 0 || cellHeightPx > 0 {
             try resize(cols: cols, rows: rows, cellWidthPx: cellWidthPx, cellHeightPx: cellHeightPx)
             pendingEffects.removeAll()
@@ -113,6 +122,7 @@ public final class VTTerminal {
         // ジェスチャーは端末の参照を持っているので、端末より先に解放する。
         selectionGesture = nil
         renderReader = nil
+        searcher = nil
         ghostty_terminal_free(handle)
     }
 
@@ -201,6 +211,14 @@ public final class VTTerminal {
         var value = 0
         _ = ghostty_terminal_get(handle, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &value)
         return value
+    }
+
+    /// libghostty が端末のために使っているメモリ（両方の画面の合計。phase5 design D8 の計測に使う）。
+    public var memoryUsage: (residentBytes: UInt64, imageBytes: UInt64) {
+        var usage = GhosttyTerminalMemoryUsage()
+        ghostty_sized_init(&usage, MemoryLayout<GhosttyTerminalMemoryUsage>.size)
+        guard ghostty_terminal_get(handle, GHOSTTY_TERMINAL_DATA_MEMORY_USAGE, &usage) == GHOSTTY_SUCCESS else { return (0, 0) }
+        return (usage.primary_resident_bytes + usage.alternate_resident_bytes, usage.primary_image_bytes + usage.alternate_image_bytes)
     }
 
     /// 既定の前景色・背景色・カーソル色と 256 色パレットを設定する。
@@ -334,6 +352,11 @@ public final class VTTerminal {
             ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, unsafeBitCast(vtClipboardWrite, to: UnsafeRawPointer.self)),
             "ghostty_terminal_set(CLIPBOARD_WRITE)"
         )
+        // 同期出力（DECSET 2026）の開始と終了。描画を保留するかどうかは `TerminalController` が決める。
+        try Self.check(
+            ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, unsafeBitCast(vtRenderHold, to: UnsafeRawPointer.self)),
+            "ghostty_terminal_set(RENDER_HOLD)"
+        )
         // 未登録だと CSI 14/16/18/19 t を黙って無視するので、最後に resize に渡した値を返す。
         try Self.check(
             ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_SIZE, unsafeBitCast(vtSize, to: UnsafeRawPointer.self)),
@@ -413,6 +436,10 @@ private let vtClipboardWrite: GhosttyTerminalClipboardWriteFn = { _, userdata, w
     guard let text = entries.first(where: { string($0.mime).hasPrefix("text/plain") }) else { return }
     terminal.pendingEffects.append(.clipboardWrite(string(text.data)))
     reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
+}
+
+private let vtRenderHold: GhosttyTerminalRenderHoldFn = { _, userdata, held in
+    terminal(from: userdata)?.isRenderHeld = held
 }
 
 private let vtSize: GhosttyTerminalSizeFn = { _, userdata, out in

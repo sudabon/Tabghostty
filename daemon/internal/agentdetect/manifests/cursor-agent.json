@@ -1,0 +1,31 @@
+{
+  "id": "cursor-agent",
+  "display_name": "Cursor Agent",
+  "schema_version": 1,
+  "match": {
+    "executables": ["agent", "cursor-agent"],
+    "command_patterns": ["(^|/)cursor-agent(\\s|$)", "(^|/)agent(\\s|$)"]
+  },
+  "screen": {
+    "bottom_lines": 15,
+    "buffer": "active",
+    "states": {
+      "blocked": [],
+      "working": [],
+      "idle": [
+        {"id": "prompt", "pattern": "^\\s*›\\s*$"}
+      ]
+    }
+  },
+  "authority": {
+    "blocked": [],
+    "working": ["activity"],
+    "idle": ["screen+quiescence"]
+  },
+  "osc_authoritative": false,
+  "quiescence_ms": 1500,
+  "activity_window_ms": 1000,
+  "activity_min_bytes": 32,
+  "verified_against": ["2026.08.11-e8db854"],
+  "notes": "Patterns are calibrated from reviewed fixtures in tests/fixtures/agents/cursor-agent/2026.08.11-e8db854. This build emits OSC 0/BEL title updates and not OSC 9/99/777. Blocked/approval detection is unverified; unmatched quiet screens are idle-safe."
+}

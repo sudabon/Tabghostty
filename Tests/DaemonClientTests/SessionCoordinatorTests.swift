@@ -27,10 +27,23 @@ final class MockDaemon: @unchecked Sendable {
     /// `attach` を受けたときに送るフレーム（sid と、その sid への何回目の attach か）。
     typealias AttachResponder = @Sendable (_ sid: String, _ count: Int) -> [[String: Any]]
 
+    /// デーモンが送るメッセージ（JSON のテキストか、バイナリ。phase6 design D3）。
+    enum Message {
+        case json([String: Any])
+        case binary(Data)
+    }
+
+    /// `attach` を受けたときに送るメッセージ（JSON とバイナリを混ぜられる）。
+    typealias AttachMessageResponder = @Sendable (_ sid: String, _ count: Int) -> [Message]
+
     let server: MockWebSocketServer
     private let state: OSAllocatedUnfairLock<State>
 
-    init(sessions: [Session], onAttach: @escaping AttachResponder) throws {
+    convenience init(sessions: [Session], onAttach: @escaping AttachResponder) throws {
+        try self.init(sessions: sessions, onAttachMessages: { sid, count in onAttach(sid, count).map(Message.json) })
+    }
+
+    init(sessions: [Session], onAttachMessages onAttach: @escaping AttachMessageResponder) throws {
         let state = OSAllocatedUnfairLock(initialState: State())
         state.withLock { $0.sessions = sessions }
         self.state = state
@@ -46,8 +59,11 @@ final class MockDaemon: @unchecked Sendable {
                     state.attachCount[sid, default: 0] += 1
                     return state.attachCount[sid]!
                 }
-                for frame in onAttach(sid, count) {
-                    server.send(json: frame, on: connection)
+                for message in onAttach(sid, count) {
+                    switch message {
+                    case .json(let frame): server.send(json: frame, on: connection)
+                    case .binary(let data): server.send(binary: data, on: connection)
+                    }
                 }
             }
         )
@@ -74,6 +90,12 @@ final class MockDaemon: @unchecked Sendable {
 
     static func output(_ sid: String, _ text: String) -> [String: Any] {
         ["t": "output", "sid": sid, "data": Data(text.utf8).base64EncodedString()]
+    }
+
+    /// バイナリのメッセージ（phase6 design D3 の案: 種類 1 バイト、sid の長さ 1 バイト、sid、PTY のバイト列）。
+    static func binary(kind: UInt8, _ sid: String, _ bytes: [UInt8]) -> Data {
+        let sidBytes = Array(sid.utf8)
+        return Data([kind, UInt8(sidBytes.count)] + sidBytes + bytes)
     }
 }
 

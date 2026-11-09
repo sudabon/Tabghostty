@@ -23,6 +23,10 @@ extension TerminalView {
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // Command+クリックでリンクを開く（spec: terminal-links）。リンクでなければ、ふつうのクリックとして扱う。
+        if event.modifierFlags.contains(.command), pointerGesture == .none, handleCommandClick(event) {
+            return
+        }
         _ = pointerDown(event, button: .left)
     }
 
@@ -66,6 +70,7 @@ extension TerminalView {
     }
 
     public override func mouseMoved(with event: NSEvent) {
+        updateLinkHover(at: convert(event.locationInWindow, from: nil), modifiers: event.modifierFlags)
         // ボタンを押さない移動は、any-event tracking（DECSET 1003）のときだけ報告する。
         guard let controller, pointerGesture == .none, controller.inputModes.mouseTracking == .any,
               !event.modifierFlags.contains(.shift) else { return }
@@ -77,13 +82,23 @@ extension TerminalView {
         if let mouseTrackingArea {
             removeTrackingArea(mouseTrackingArea)
         }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(
+            rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self
+        )
         addTrackingArea(area)
         mouseTrackingArea = area
     }
 
+    public override func mouseExited(with event: NSEvent) {
+        updateLinkHover(at: nil, modifiers: [])
+    }
+
     public override func resetCursorRects() {
         addCursorRect(bounds, cursor: .iBeam)
+        // Command を押してリンクの上にいる間は、リンクのセルを指の形にする。
+        for span in hoveredLink?.spans ?? [] {
+            addCursorRect(cellRect(x: span.columns.lowerBound, y: span.row, width: span.columns.count), cursor: .pointingHand)
+        }
     }
 
     /// ボタンを押した。

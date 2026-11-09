@@ -4,7 +4,7 @@ import Testing
 
 /// spec: terminal-engine「Recorded agent streams are processed deterministically」。
 ///
-/// フィクスチャは webtabinal の tests/fixtures/agents をコピーしたもの（`make fixtures`、出典は Tests/Fixtures/SOURCE）。
+/// フィクスチャは daemon/tests/fixtures/agents（もとは webtabinal）をコピーしたもの（`make fixtures`、出典は Tests/Fixtures/SOURCE）。
 /// 期待する画面テキストはフィクスチャに無いので、書き込み方によらず結果が同じになることだけを確かめる（design D9）。
 @Suite struct FixtureStreamTests {
     struct Fixture: CustomTestStringConvertible, Sendable {
@@ -55,7 +55,7 @@ import Testing
     }
 
     @Test func fixturesArePresent() throws {
-        // webtabinal のチェックアウトが無くても、コミット済みのフィクスチャで実行できる。
+        // 取り込み元が無くても、コミット済みのフィクスチャで実行できる。
         #expect(try Self.loadFixtures().count >= 20)
     }
 

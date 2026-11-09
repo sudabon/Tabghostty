@@ -1,0 +1,21 @@
+# WebTabinal bash --rcfile: emulate login startup, then load OSC integration.
+if [[ -n "${WEBTABINAL_BASHRC_LOADED:-}" ]]; then
+  return
+fi
+WEBTABINAL_BASHRC_LOADED=1
+
+if [[ -f /etc/profile ]]; then
+  . /etc/profile
+fi
+
+if [[ -f "${HOME}/.bash_profile" ]]; then
+  . "${HOME}/.bash_profile"
+elif [[ -f "${HOME}/.bash_login" ]]; then
+  . "${HOME}/.bash_login"
+elif [[ -f "${HOME}/.profile" ]]; then
+  . "${HOME}/.profile"
+fi
+
+if [[ -n "${WEBTABINAL_SESSION_ID:-}" && -n "${WEBTABINAL_INTEGRATION_PATH:-}" && -f "${WEBTABINAL_INTEGRATION_PATH}" ]]; then
+  . "${WEBTABINAL_INTEGRATION_PATH}"
+fi

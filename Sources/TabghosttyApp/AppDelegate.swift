@@ -58,6 +58,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        // libghostty-vt のプロセス全体の設定（PNG の展開）は、ほかのスレッドがライブラリを使う前に済ませる。
+        GhosttySystem.install()
+        // Metal のシェーダーは実行時にコンパイルする（数十 ms）。デーモンにつなぐ間に済ませておく（phase5 design D1）。
+        TerminalView.preloadRenderer()
         let controller = MainWindowController()
         windowController = controller
         controller.showWindow(nil)
@@ -368,6 +372,14 @@ enum AppMenu {
         editItem.submenu = editMenu
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        // 端末の中の検索（spec: terminal-search）。検索欄にフォーカスがあっても、レスポンダチェーンで端末に届く。
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "検索…", action: #selector(TerminalFindActions.showFindBar(_:)), keyEquivalent: "f")
+        editMenu.addItem(withTitle: "次を検索", action: #selector(TerminalFindActions.findNext(_:)), keyEquivalent: "g")
+        let previous = editMenu.addItem(
+            withTitle: "前を検索", action: #selector(TerminalFindActions.findPrevious(_:)), keyEquivalent: "g"
+        )
+        previous.keyEquivalentModifierMask = [.command, .shift]
         return editItem
     }
 }

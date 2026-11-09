@@ -1,3 +1,4 @@
-repository: https://github.com/sudabon/webtabinal
-path: tests/fixtures/agents
-commit: 6dca08f351aecef2923a494b850981deaf5a45a1
+repository: tabghostty daemon/（フィクスチャのもとは webtabinal。daemon/UPSTREAM.md）
+path: daemon/tests/fixtures/agents
+commit: 373f071618add94aa3d2a93110440911e926a5a3-dirty
+reference_screens: 21

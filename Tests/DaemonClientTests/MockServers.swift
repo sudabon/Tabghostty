@@ -246,10 +246,23 @@ final class MockWebSocketServer: @unchecked Sendable {
         send(String(decoding: data, as: UTF8.self), on: connection)
     }
 
+    /// バイナリのフレームを送る。
+    func send(binary data: Data, on connection: NWConnection) {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
+        let context = NWConnection.ContentContext(identifier: "binary", metadata: [metadata])
+        connection.send(content: data, contentContext: context, isComplete: true, completion: .idempotent)
+    }
+
     /// 最新の接続にフレームを送る。
     func sendToLatest(json object: [String: Any]) {
         guard let connection = state.withLock({ $0.connections.last }) else { return }
         send(json: object, on: connection)
+    }
+
+    /// 最新の接続にバイナリのフレームを送る。
+    func sendToLatest(binary data: Data) {
+        guard let connection = state.withLock({ $0.connections.last }) else { return }
+        send(binary: data, on: connection)
     }
 
     /// 最新の接続に ping を送り、pong が返ってきたら true。

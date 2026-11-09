@@ -446,6 +446,8 @@ native-test:
 
 目的: サーバー側の画面モデル（エージェント検出の入力）とクライアント表示を同じエンジンにして、検出のずれを無くす。
 
+> **2026-11-09 の変更**: webtabinal は変更しないことにした。そのため、デーモンを Tabghostty の `daemon/` に取り込み、以下の作業はその中で行う。Tabghostty.app に同梱するデーモンは `daemon/` から `ghostty` タグでビルドする。この節の図と表にある「webtabinal は変更しない」「Phase 6 で `internal/vtscreen` に追加」は、`daemon/` に読み替える。経緯と詳細は `openspec/changes/phase6-daemon-ghostty-screen` と `daemon/UPSTREAM.md` にある。
+
 作業:
 1. `internal/vtscreen/` に `ghostty.go` を追加し、`Screen` インタフェース（`Feed` / `Resize` / `Snapshot` / `Close`）を `go.mitchellh.com/libghostty` で実装する。
    - Terminal 生成は size 指定 + スクロールバック最小。

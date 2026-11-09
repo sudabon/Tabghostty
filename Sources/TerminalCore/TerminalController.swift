@@ -94,8 +94,27 @@ public actor TerminalController {
 
     /// 入力のバッファ（メインスレッドから同期的に積む）。
     private nonisolated let inputBuffer = OSAllocatedUnfairLock(initialState: InputBuffer())
-    /// 描画すべき変化があるか（ビューの display link から同期的に読む）。
-    private nonisolated let renderPending = OSAllocatedUnfairLock(initialState: true)
+    /// 受信した replay / output（受信ループから同期的に積む。phase5 design D2）。
+    private nonisolated let incoming = OSAllocatedUnfairLock(initialState: IncomingBuffer())
+    /// attach し直すか、接続が切れるたびに増える（書き込みの途中で止める）。
+    private var writeEpoch = 0
+    /// 描画すべき変化があるか、同期出力で保留しているか（ビューの display link から同期的に読む）。
+    private nonisolated let renderGate = OSAllocatedUnfairLock(initialState: RenderGate())
+    /// 同期出力の保留を始めるたびに増える（古い保留のタイムアウトを無視する）。
+    private var renderHoldGeneration = 0
+
+    // 検索（spec: terminal-search、phase5 design D5）
+    private var searchQuery = ""
+    private var searchMatches: [SearchMatch] = []
+    private var searchIndex: Int?
+    /// 新しい出力のあとの再検索を予約している。
+    private var researchScheduled = false
+    /// 再検索の結果を知らせる（検索バーの `n / m`）。
+    private nonisolated let searchObserver = OSAllocatedUnfairLock<(@Sendable (SearchStatus) -> Void)?>(initialState: nil)
+    /// 新しい出力が来てから、再検索するまでの時間（その間の出力はまとめて 1 回で検索する）。
+    public static let researchDelay: Duration = .milliseconds(200)
+    /// 描画すべき変化が起きたときに呼ぶ（表示しているビューが、止めていた display link を再開する。phase5 design D3）。
+    private nonisolated let renderObserver = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     /// 入力の振り分けに使うモード（ビューから同期的に読む）。端末に書き込むたびに更新する。
     private nonisolated let modesState = OSAllocatedUnfairLock(initialState: TerminalInputModes())
     /// 次のスナップショットを全行にするか。
@@ -118,6 +137,47 @@ public actor TerminalController {
         var items: [InputItem] = []
         var flushScheduled = false
     }
+
+    /// 受信した端末の出力 1 つ。
+    enum Incoming: Sendable {
+        case replay([UInt8], done: Bool)
+        case output([UInt8])
+
+        var count: Int {
+            switch self {
+            case .replay(let bytes, _), .output(let bytes): return bytes.count
+            }
+        }
+    }
+
+    private struct IncomingBuffer {
+        var items: [Incoming] = []
+        /// 書き込んでいない残りのバイト数。
+        var pendingBytes = 0
+        var draining = false
+    }
+
+    /// 1 回に書き込む最大の大きさ。書き込むたびに actor を手放し、入力の送信やリサイズを後回しにしない。
+    public static let writeChunkSize = 64 * 1024
+
+    /// 描画してよいか（spec: terminal-rendering「Synchronized output」、phase5 design D4）。
+    struct RenderGate: Sendable {
+        /// 描画すべき変化がある。
+        var pending = true
+        /// プログラムが同期出力（DECSET 2026）で更新を止めた時刻。止めていなければ nil。
+        var heldSince: ContinuousClock.Instant?
+        /// 止めたままにする最長の時間（libghostty にタイムアウトは無いので、Ghostty 本体と同じ 1 秒を持つ）。
+        var holdTimeout: Duration = TerminalController.renderHoldTimeout
+
+        /// 今、描画を保留しているか（止めていて、タイムアウトが過ぎていない）。
+        func isHeld(at now: ContinuousClock.Instant) -> Bool {
+            guard let heldSince else { return false }
+            return now - heldSince < holdTimeout
+        }
+    }
+
+    /// 同期出力の保留のタイムアウト。
+    public static let renderHoldTimeout: Duration = .seconds(1)
 
     /// - Parameters:
     ///   - sid: セッション ID
@@ -152,12 +212,22 @@ public actor TerminalController {
     @discardableResult
     public func attach() -> Bool {
         _ = drainInput()
+        // 積んである出力は attach より前のもので、replay に含まれる。書き込みの途中なら、そこで止める。
+        discardIncoming()
+        writeEpoch += 1
         terminal.reset()
         if let colors {
             try? terminal.setColors(colors)
         }
+        if !searchQuery.isEmpty {
+            // 画面が空になったので、一致も無くなる（replay を受け取ったら、出力として検索し直す）。
+            searchMatches = []
+            searchIndex = nil
+            publishSearchStatus()
+        }
         _ = terminal.takeEffects()
         refreshInputModes()
+        updateRenderHold()
         forceFullSnapshot = true
         markRenderPending()
 
@@ -169,13 +239,85 @@ public actor TerminalController {
         return true
     }
 
+    // MARK: - 受信した出力（phase5 design D2）
+
+    /// `replay` フレームを積む。受信ループは書き込みを待たずに次のフレームを読む（ほかのセッションの出力を待たせない）。
+    /// 積んだ順に、この actor の上で書き込む。
+    public nonisolated func enqueueReplay(_ bytes: [UInt8], done: Bool) {
+        enqueueIncoming(.replay(bytes, done: done))
+    }
+
+    /// `output` フレームを積む（`enqueueReplay` と同じ）。
+    public nonisolated func enqueueOutput(_ bytes: [UInt8]) {
+        enqueueIncoming(.output(bytes))
+    }
+
+    /// 積んだまま、まだ書き込んでいない出力のバイト数。
+    public nonisolated var pendingOutputBytes: Int {
+        incoming.withLock { $0.pendingBytes }
+    }
+
+    /// 積んだ出力をすべて書き込むまで待つ（テスト用）。
+    public func waitUntilIncomingIsWritten() async {
+        while incoming.withLock({ $0.draining || !$0.items.isEmpty }) {
+            await Task.yield()
+        }
+    }
+
+    private nonisolated func enqueueIncoming(_ item: Incoming) {
+        let start = incoming.withLock { buffer -> Bool in
+            buffer.items.append(item)
+            buffer.pendingBytes += item.count
+            guard !buffer.draining else { return false }
+            buffer.draining = true
+            return true
+        }
+        guard start else { return }
+        Task { await self.drainIncoming() }
+    }
+
+    /// 積んである出力を、積んだ順に書き込む。
+    ///
+    /// フレームの間でも actor を手放す（デーモンは 32 KiB ほどのフレームで送るので、フレームの中で区切るだけでは
+    /// 大量の出力の間ずっと actor を握ってしまう）。
+    private func drainIncoming() async {
+        while true {
+            let next = incoming.withLock { buffer -> Incoming? in
+                guard !buffer.items.isEmpty else {
+                    buffer.draining = false
+                    return nil
+                }
+                return buffer.items.removeFirst()
+            }
+            guard let next else { return }
+            switch next {
+            case .replay(let bytes, let done):
+                await receiveReplay(bytes, done: done, countedAsPending: true)
+            case .output(let bytes):
+                await receiveOutput(bytes, countedAsPending: true)
+            }
+            await Task.yield()
+        }
+    }
+
+    private func discardIncoming() {
+        incoming.withLock { buffer in
+            buffer.items.removeAll()
+            buffer.pendingBytes = 0
+        }
+    }
+
     /// `replay` フレームを書き込む。`done` なら live に移り、ビューのグリッドサイズで `resize` を送る。
-    public func receiveReplay(_ bytes: [UInt8], done: Bool) {
-        guard phase == .replaying else { return }
-        terminal.write(bytes)
-        routeEffects()
-        refreshInputModes()
-        markRenderPending()
+    public func receiveReplay(_ bytes: [UInt8], done: Bool) async {
+        await receiveReplay(bytes, done: done, countedAsPending: false)
+    }
+
+    private func receiveReplay(_ bytes: [UInt8], done: Bool, countedAsPending: Bool) async {
+        guard phase == .replaying else {
+            if countedAsPending { consumePending(bytes.count) }
+            return
+        }
+        guard await write(bytes, countedAsPending: countedAsPending) else { return }
         if done {
             phase = .live
             sendViewSize()
@@ -186,12 +328,44 @@ public actor TerminalController {
     ///
     /// live のときだけ書き込む。replay 中に届く output は、attach より前にデーモンが送り出したもので、
     /// replay の内容（リングバッファ）に含まれているので捨てる（overflow で attach し直したときに内容が重複しない）。
-    public func receiveOutput(_ bytes: [UInt8]) {
-        guard phase == .live else { return }
-        terminal.write(bytes)
-        routeEffects()
-        refreshInputModes()
-        markRenderPending()
+    public func receiveOutput(_ bytes: [UInt8]) async {
+        await receiveOutput(bytes, countedAsPending: false)
+    }
+
+    private func receiveOutput(_ bytes: [UInt8], countedAsPending: Bool) async {
+        guard phase == .live else {
+            if countedAsPending { consumePending(bytes.count) }
+            return
+        }
+        _ = await write(bytes, countedAsPending: countedAsPending)
+    }
+
+    /// 端末に書き込む。最大 `writeChunkSize` ずつ書き込み、そのたびに actor を手放す（`Task.yield()`）。
+    /// その間に積まれた入力の送信・リサイズ・スナップショットの作成が先に進む（spec: terminal-rendering
+    /// 「Responsiveness under heavy output」）。
+    /// - Returns: 最後まで書き込んだら true。途中で attach し直したか、接続が切れたら false（残りは捨てる）
+    private func write(_ bytes: [UInt8], countedAsPending: Bool) async -> Bool {
+        let epoch = writeEpoch
+        var offset = 0
+        while offset < bytes.count {
+            let end = min(offset + Self.writeChunkSize, bytes.count)
+            terminal.write(bytes[offset..<end])
+            routeEffects()
+            refreshInputModes()
+            updateRenderHold()
+            markRenderPending()
+            if countedAsPending { consumePending(end - offset) }
+            scheduleResearchIfNeeded()
+            offset = end
+            guard offset < bytes.count else { break }
+            await Task.yield()
+            guard epoch == writeEpoch else { return false }
+        }
+        return true
+    }
+
+    private func consumePending(_ count: Int) {
+        incoming.withLock { $0.pendingBytes = max(0, $0.pendingBytes - count) }
     }
 
     /// `attach_overflow` を受けたら、リセットして最初から attach し直す。
@@ -204,6 +378,9 @@ public actor TerminalController {
     public func connectionLost() {
         phase = .detached
         _ = drainInput()
+        // 積んである出力は捨てる（attach し直すと replay で最初から受け取る）。
+        discardIncoming()
+        writeEpoch += 1
     }
 
     // MARK: - ビューから（spec: terminal-rendering「Grid size follows the view」）
@@ -219,8 +396,9 @@ public actor TerminalController {
         } catch {
             return
         }
-        // mode 2048 のサイズ報告が出ることがある。
+        // mode 2048 のサイズ報告が出ることがある。リサイズは同期出力の保留も解く。
         routeEffects()
+        updateRenderHold()
         markRenderPending()
         if phase == .live, previous?.cols != grid.cols || previous?.rows != grid.rows {
             sendViewSize()
@@ -436,17 +614,194 @@ public actor TerminalController {
         modesState.withLock { $0 }
     }
 
-    /// 描画すべき変化があるか（同期的に読める）。
+    /// 描画すべき変化があるか（同期的に読める）。同期出力で保留している間は false。
     public nonisolated var needsRender: Bool {
-        renderPending.withLock { $0 }
+        let now = ContinuousClock.now
+        return renderGate.withLock { $0.pending && !$0.isHeld(at: now) }
+    }
+
+    /// 同期出力（DECSET 2026）で描画を保留しているか。
+    public nonisolated var isRenderHeld: Bool {
+        let now = ContinuousClock.now
+        return renderGate.withLock { $0.isHeld(at: now) }
+    }
+
+    /// 同期出力の保留のタイムアウトを変える（テスト用）。
+    func setRenderHoldTimeoutForTesting(_ timeout: Duration) {
+        renderGate.withLock { $0.holdTimeout = timeout }
+    }
+
+    /// 描画すべき変化が無い状態から、ある状態になったときに呼ぶ処理を設定する（nil で外す）。
+    /// どのスレッドからも呼ばれるので、メインスレッドに移ってから処理する。
+    public nonisolated func setRenderObserver(_ observer: (@Sendable () -> Void)?) {
+        renderObserver.withLock { $0 = observer }
     }
 
     /// 描画用のスナップショット（変化した行だけ）を作る。
-    public func makeSnapshot(forceFull: Bool = false) -> FrameSnapshot? {
-        renderPending.withLock { $0 = false }
+    ///
+    /// プログラムが同期出力で更新を止めている間は、途中の画面を見せないよう nil を返す（変化は次に回す）。
+    /// - Parameter knownImageGenerations: ビューが中身（テクスチャ）を持っている画像の世代。その中身はコピーしない
+    public func makeSnapshot(forceFull: Bool = false, knownImageGenerations: Set<UInt64> = []) -> FrameSnapshot? {
+        let now = ContinuousClock.now
+        let held = renderGate.withLock { gate -> Bool in
+            guard !gate.isHeld(at: now) else { return true }
+            gate.pending = false
+            return false
+        }
+        guard !held else { return nil }
         let full = forceFull || forceFullSnapshot
         forceFullSnapshot = false
-        return try? terminal.makeSnapshot(forceFull: full)
+        guard var snapshot = try? terminal.makeSnapshot(forceFull: full, knownImageGenerations: knownImageGenerations) else { return nil }
+        snapshot.searchHighlights = viewportSearchHighlights(cols: snapshot.cols, rows: snapshot.rows)
+        return snapshot
+    }
+
+    // MARK: - リンク（spec: terminal-links、phase5 design D6）
+
+    /// viewport のセルにある OSC 8 のリンク。素の URL は、ビューが表示しているセルから探す（`LinkDetector.plainLink`）。
+    public func hyperlink(at point: GridPoint) -> TerminalLink? {
+        terminal.hyperlink(at: point)
+    }
+
+    // MARK: - 検索（spec: terminal-search、phase5 design D5）
+
+    /// `query` で検索し、最初の一致（いちばん上）を今の一致にして、見えるところまで viewport を動かす。
+    /// 一致が無ければ viewport は動かさない。空の文字列なら検索をやめる。
+    @discardableResult
+    public func search(_ query: String) -> SearchStatus {
+        flushInput()
+        searchQuery = query
+        guard !query.isEmpty else {
+            endSearch()
+            return .empty
+        }
+        searchMatches = (try? terminal.search(query)) ?? []
+        searchIndex = searchMatches.isEmpty ? nil : 0
+        scrollToCurrentMatch()
+        forceFullSnapshot = true
+        markRenderPending()
+        return searchStatus
+    }
+
+    /// 次の一致（下）に移る。最後の一致の次は最初の一致。
+    @discardableResult
+    public func searchNext() -> SearchStatus {
+        moveSearch(by: 1)
+    }
+
+    /// 前の一致（上）に移る。最初の一致の前は最後の一致。
+    @discardableResult
+    public func searchPrevious() -> SearchStatus {
+        moveSearch(by: -1)
+    }
+
+    /// 検索をやめ、強調を消す。
+    public func endSearch() {
+        let hadMatches = !searchMatches.isEmpty
+        searchQuery = ""
+        searchMatches = []
+        searchIndex = nil
+        researchScheduled = false
+        terminal.endSearch()
+        if hadMatches {
+            forceFullSnapshot = true
+            markRenderPending()
+        }
+    }
+
+    /// 今の検索の状態。
+    public var searchStatus: SearchStatus {
+        SearchStatus(query: searchQuery, total: searchMatches.count, current: searchIndex)
+    }
+
+    /// 今の一致（テスト用）。
+    public var currentSearchMatch: SearchMatch? {
+        searchIndex.map { searchMatches[$0] }
+    }
+
+    /// 新しい出力のあとに検索し直した結果を知らせる（nil で外す）。どのスレッドからも呼ばれる。
+    public nonisolated func setSearchObserver(_ observer: (@Sendable (SearchStatus) -> Void)?) {
+        searchObserver.withLock { $0 = observer }
+    }
+
+    private func moveSearch(by delta: Int) -> SearchStatus {
+        flushInput()
+        guard !searchMatches.isEmpty else { return searchStatus }
+        let count = searchMatches.count
+        let current = searchIndex ?? (delta > 0 ? -1 : 0)
+        searchIndex = ((current + delta) % count + count) % count
+        scrollToCurrentMatch()
+        forceFullSnapshot = true
+        markRenderPending()
+        return searchStatus
+    }
+
+    private func scrollToCurrentMatch() {
+        guard let match = currentSearchMatch else { return }
+        terminal.scrollToShow(match)
+    }
+
+    /// 新しい出力が来たら、`researchDelay` のあとに検索し直す（その間の出力はまとめる）。
+    private func scheduleResearchIfNeeded() {
+        guard !searchQuery.isEmpty, !researchScheduled else { return }
+        researchScheduled = true
+        Task { [weak self] in
+            try? await Task.sleep(for: TerminalController.researchDelay)
+            await self?.research()
+        }
+    }
+
+    /// 検索し直す。今の一致が残っていればそのまま、無くなっていれば近い番号にする。viewport は動かさない。
+    private func research() {
+        guard researchScheduled else { return }
+        researchScheduled = false
+        guard !searchQuery.isEmpty else { return }
+        let previous = currentSearchMatch
+        let previousIndex = searchIndex
+        searchMatches = (try? terminal.search(searchQuery)) ?? []
+        if searchMatches.isEmpty {
+            searchIndex = nil
+        } else if let previous, let same = searchMatches.firstIndex(of: previous) {
+            searchIndex = same
+        } else {
+            searchIndex = min(previousIndex ?? 0, searchMatches.count - 1)
+        }
+        forceFullSnapshot = true
+        markRenderPending()
+        publishSearchStatus()
+    }
+
+    private func publishSearchStatus() {
+        let status = searchStatus
+        searchObserver.withLock { $0 }?(status)
+    }
+
+    /// viewport の行ごとの一致の列（スナップショットに入れる）。
+    private func viewportSearchHighlights(cols: Int, rows: Int) -> [Int: [SearchHighlight]] {
+        guard !searchMatches.isEmpty, cols > 0, rows > 0 else { return [:] }
+        let top = terminal.viewportOffset
+        let bottom = top + rows - 1
+        // 一致は上から順なので、viewport より前で終わる一致を二分探索で飛ばす。
+        var low = 0
+        var high = searchMatches.count
+        while low < high {
+            let middle = (low + high) / 2
+            if searchMatches[middle].endRow < top { low = middle + 1 } else { high = middle }
+        }
+        var highlights: [Int: [SearchHighlight]] = [:]
+        var index = low
+        while index < searchMatches.count, searchMatches[index].startRow <= bottom {
+            let match = searchMatches[index]
+            let isCurrent = index == searchIndex
+            for row in max(match.startRow, top)...min(match.endRow, bottom) {
+                let first = row == match.startRow ? match.startColumn : 0
+                let last = row == match.endRow ? match.endColumn : cols - 1
+                guard first <= last else { continue }
+                highlights[row - top, default: []].append(SearchHighlight(columns: first...min(last, cols - 1), isCurrent: isCurrent))
+            }
+            index += 1
+        }
+        return highlights
     }
 
     /// 画面の plain テキスト（テスト・デバッグ用）。
@@ -459,6 +814,7 @@ public actor TerminalController {
         terminal.write(bytes)
         _ = terminal.takeEffects()
         refreshInputModes()
+        updateRenderHold()
     }
 
     /// テスト用: 端末を直接触る。
@@ -517,6 +873,54 @@ public actor TerminalController {
     }
 
     private func markRenderPending() {
-        renderPending.withLock { $0 = true }
+        let wasPending = renderGate.withLock { gate -> Bool in
+            defer { gate.pending = true }
+            return gate.pending
+        }
+        if !wasPending {
+            notifyRenderObserver()
+        }
+    }
+
+    private func notifyRenderObserver() {
+        renderObserver.withLock { $0 }?()
+    }
+
+    /// 同期出力の開始と終了を、描画の保留に反映する（phase5 design D4）。
+    private func updateRenderHold() {
+        let held = terminal.isRenderHeld
+        let now = ContinuousClock.now
+        let change = renderGate.withLock { gate -> Bool? in
+            if held, gate.heldSince == nil {
+                gate.heldSince = now
+                return true
+            }
+            if !held, gate.heldSince != nil {
+                gate.heldSince = nil
+                return false
+            }
+            return nil
+        }
+        switch change {
+        case true?:
+            // 解除されないまま時間が過ぎたら、そこまでの画面を描く。
+            renderHoldGeneration += 1
+            let generation = renderHoldGeneration
+            let timeout = renderGate.withLock { $0.holdTimeout }
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                await self?.renderHoldTimedOut(generation)
+            }
+        case false?:
+            // 解除された。完成した画面をすぐに描く（保留している間に display link が止まっていることがある）。
+            notifyRenderObserver()
+        case nil:
+            break
+        }
+    }
+
+    private func renderHoldTimedOut(_ generation: Int) {
+        guard generation == renderHoldGeneration, renderGate.withLock({ $0.heldSince != nil && $0.pending }) else { return }
+        notifyRenderObserver()
     }
 }

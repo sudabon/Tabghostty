@@ -1,0 +1,29 @@
+{
+  "id": "generic",
+  "display_name": "Generic TUI",
+  "schema_version": 1,
+  "match": {
+    "executables": [],
+    "command_patterns": []
+  },
+  "screen": {
+    "bottom_lines": 15,
+    "buffer": "active",
+    "states": {
+      "blocked": [],
+      "working": [],
+      "idle": []
+    }
+  },
+  "authority": {
+    "blocked": [],
+    "working": ["activity"],
+    "idle": ["screen+quiescence"]
+  },
+  "osc_authoritative": false,
+  "quiescence_ms": 1500,
+  "activity_window_ms": 1000,
+  "activity_min_bytes": 32,
+  "verified_against": [],
+  "notes": "Unrecognized full-screen TUIs. Activity may produce working or idle only; blocked is disabled."
+}

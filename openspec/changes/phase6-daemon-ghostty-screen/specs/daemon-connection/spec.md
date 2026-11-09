@@ -4,7 +4,7 @@
 
 ### Requirement: Binary output frames
 
-The client SHALL include `"binary": true` in every `attach` frame. It SHALL accept session output and replay data both as JSON text frames (`output`, `replay` with base64 data) and as binary WebSocket messages in the format defined by the daemon's binary frame specification, and SHALL process both in the order received. A daemon that ignores the `binary` field SHALL continue to work with the client unchanged, through JSON frames.
+The client SHALL include `"binary": true` in every `attach` frame. It SHALL accept session output and replay data both as JSON text frames (`output`, `replay` with base64 data) and as binary WebSocket messages in the format defined by bundled-daemon「Binary output frames format」, and SHALL process both in the order received. A binary message whose first byte is not a known kind SHALL be read as JSON, and a message that cannot be read either way SHALL be ignored without disconnecting. A daemon that ignores the `binary` field SHALL continue to work with the client unchanged, through JSON frames.
 
 #### Scenario: Daemon with binary support
 

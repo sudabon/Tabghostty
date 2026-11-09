@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "command": "codex"
+  },
+  "steps": [
+    {
+      "name": "working",
+      "byte_start": 0,
+      "byte_end": 106,
+      "advance_ms": 120,
+      "expect": {
+        "agent_id": "codex",
+        "state": "working",
+        "signal": "screen",
+        "change_count": 2
+      },
+      "output_bytes": 40
+    },
+    {
+      "name": "blocked",
+      "byte_start": 106,
+      "byte_end": 228,
+      "advance_ms": 120,
+      "expect": {
+        "agent_id": "codex",
+        "state": "blocked",
+        "signal": "screen",
+        "change_count": 3
+      },
+      "output_bytes": 4
+    },
+    {
+      "name": "idle",
+      "byte_start": 228,
+      "byte_end": 302,
+      "advance_ms": 1620,
+      "expect": {
+        "agent_id": "codex",
+        "state": "idle",
+        "signal": "screen",
+        "change_count": 5
+      },
+      "output_bytes": 4
+    },
+    {
+      "name": "unknown",
+      "byte_start": 302,
+      "byte_end": 395,
+      "advance_ms": 1620,
+      "expect": {
+        "agent_id": "codex",
+        "state": "idle",
+        "signal": "screen",
+        "change_count": 5
+      },
+      "output_bytes": 4
+    }
+  ]
+}

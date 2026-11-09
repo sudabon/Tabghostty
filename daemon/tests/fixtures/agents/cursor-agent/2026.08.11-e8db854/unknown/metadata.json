@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "agent": "cursor-agent",
+  "version": "2026.08.11-e8db854",
+  "scenario": "unknown",
+  "rows": 24,
+  "columns": 80,
+  "term": "xterm-256color",
+  "locale": "en_US.UTF-8",
+  "platform": "synthetic",
+  "capture_tool_version": "record-agent-fixture/1",
+  "reviewed": true,
+  "osc": {
+    "osc0": true,
+    "osc9": false,
+    "osc99": false,
+    "osc777": false
+  },
+  "notes": "Reviewed synthetic PTY shapes distilled from Cursor Agent 2026.08.11-e8db854 TUI chrome and documented OSC 0/BEL-only behavior. Not an interactive network session capture. Blocked/approval chrome was not captured; blocked detection is unverified."
+}

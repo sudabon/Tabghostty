@@ -259,3 +259,50 @@ extension VTTerminal {
         return try format(selection: &selection, unwrap: true)
     }
 }
+
+// MARK: - OSC 8 のリンク（spec: terminal-links、phase5 design D6）
+
+extension VTTerminal {
+    /// viewport のセルの参照。セルが無ければ nil。参照は次に端末を変更するまでしか有効でない。
+    private func viewportRef(x: Int, y: Int) -> GhosttyGridRef? {
+        guard x >= 0, y >= 0, x < cols, y < rows else { return nil }
+        var ref = GhosttyGridRef()
+        let point = GhosttyPoint(
+            tag: GHOSTTY_POINT_TAG_VIEWPORT,
+            value: GhosttyPointValue(coordinate: GhosttyPointCoordinate(x: UInt16(x), y: UInt32(y)))
+        )
+        guard ghostty_terminal_grid_ref(handle, point, &ref) == GHOSTTY_SUCCESS else { return nil }
+        return ref
+    }
+
+    /// viewport のセル (x, y) に OSC 8 で付けられた URI。無ければ nil。
+    public func hyperlinkURI(x: Int, y: Int) -> String? {
+        guard var ref = viewportRef(x: x, y: y) else { return nil }
+        var length = 0
+        let probe = ghostty_grid_ref_hyperlink_uri(&ref, nil, 0, &length)
+        guard probe == GHOSTTY_OUT_OF_SPACE || probe == GHOSTTY_SUCCESS, length > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: length)
+        guard ghostty_grid_ref_hyperlink_uri(&ref, &buffer, buffer.count, &length) == GHOSTTY_SUCCESS else { return nil }
+        return String(decoding: buffer.prefix(length), as: UTF8.self)
+    }
+
+    /// viewport の行 y が、次の行にソフト折り返しで続くか。
+    public func viewportRowWraps(_ y: Int) -> Bool {
+        guard var ref = viewportRef(x: 0, y: y) else { return false }
+        var row: GhosttyRow = 0
+        guard ghostty_grid_ref_row(&ref, &row) == GHOSTTY_SUCCESS else { return false }
+        var wraps = false
+        _ = ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &wraps)
+        return wraps
+    }
+
+    /// viewport のセルにある OSC 8 のリンク（同じ URI のセルが続く範囲）。
+    public func hyperlink(at point: GridPoint) -> TerminalLink? {
+        LinkDetector.hyperlink(
+            at: point, cols: cols, rows: rows,
+            wraps: { self.viewportRowWraps($0) },
+            uri: { self.hyperlinkURI(x: $0, y: $1) }
+        )
+    }
+}
+

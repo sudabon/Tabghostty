@@ -118,12 +118,22 @@ public struct FrameSnapshot: Sendable, Equatable {
     public var dirtyRows: [(y: Int, cells: [CellSnapshot])]
     /// 変化した行のうち、選択されている列の範囲（両端を含む）。選択の無い行は入っていない。
     public var selections: [Int: ClosedRange<Int>] = [:]
+    /// 変化した行のうち、次の行にソフト折り返しで続く行（URL を行をまたいで探すのに使う）。
+    public var wrappedRows: Set<Int> = []
     public var colors: FrameColors
     public var cursor: CursorSnapshot?
+    /// viewport の行ごとの検索の一致（全行。変化した行だけではない）。検索していなければ空。
+    public var searchHighlights: [Int: [SearchHighlight]] = [:]
+    /// viewport に入っている画像の配置（全部。層、z の順）。
+    public var images: [ImagePlacement] = []
+    /// 配置の画像のうち、ビューがまだ持っていない世代の中身（`makeSnapshot` の `knownImageGenerations` に無いもの）。
+    public var imagePixels: [UInt64: ImagePixels] = [:]
 
     public static func == (lhs: FrameSnapshot, rhs: FrameSnapshot) -> Bool {
         lhs.cols == rhs.cols && lhs.rows == rhs.rows && lhs.isFull == rhs.isFull
             && lhs.colors == rhs.colors && lhs.cursor == rhs.cursor && lhs.selections == rhs.selections
+            && lhs.searchHighlights == rhs.searchHighlights && lhs.wrappedRows == rhs.wrappedRows
+            && lhs.images == rhs.images && lhs.imagePixels == rhs.imagePixels
             && lhs.dirtyRows.count == rhs.dirtyRows.count
             && zip(lhs.dirtyRows, rhs.dirtyRows).allSatisfy { $0.y == $1.y && $0.cells == $1.cells }
     }
@@ -135,6 +145,8 @@ final class RenderStateReader {
     private let rowIterator: GhosttyRenderStateRowIterator
     private let rowCells: GhosttyRenderStateRowCells
     private var textBuffer = [UInt8](repeating: 0, count: 64)
+    /// 画像の配置（最初に画像を読むときに作る）。
+    private var imageReader: ImagePlacementReader?
 
     init() throws {
         var state: GhosttyRenderState?
@@ -163,7 +175,8 @@ final class RenderStateReader {
 
     /// Terminal から RenderState を更新し、変化した行をコピーする。読んだら dirty を消す。
     /// - Parameter forceFull: true なら dirty に関係なく全行を返す（ビューを作り直したときなど）。
-    func snapshot(of terminal: GhosttyTerminal, forceFull: Bool) throws -> FrameSnapshot {
+    /// - Parameter knownImageGenerations: ビューが中身を持っている画像の世代（その中身は読まない）
+    func snapshot(of terminal: GhosttyTerminal, forceFull: Bool, knownImageGenerations: Set<UInt64> = []) throws -> FrameSnapshot {
         try VTTerminal.check(ghostty_render_state_update(state, terminal), "ghostty_render_state_update")
         defer { ghostty_render_state_clean(state) }
 
@@ -187,23 +200,45 @@ final class RenderStateReader {
 
         var dirtyRows: [(y: Int, cells: [CellSnapshot])] = []
         var selections: [Int: ClosedRange<Int>] = [:]
+        var wrappedRows: Set<Int> = []
         var y: UInt16 = 0
         while ghostty_render_state_row_iterator_next_dirty(rowIterator, &y) {
             dirtyRows.append((Int(y), try readRow(cols: Int(cols))))
             if let selected = readRowSelection() {
                 selections[Int(y)] = selected
             }
+            if readRowWraps() {
+                wrappedRows.insert(Int(y))
+            }
         }
 
-        return FrameSnapshot(
+        var snapshot = FrameSnapshot(
             cols: Int(cols),
             rows: Int(rows),
             isFull: dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL,
             dirtyRows: dirtyRows,
             selections: selections,
+            wrappedRows: wrappedRows,
             colors: readColors(),
             cursor: readCursor()
         )
+        // 画像の配置（Kitty Graphics。spec: inline-images）。
+        if imageReader == nil {
+            imageReader = try? ImagePlacementReader()
+        }
+        if let imageReader {
+            (snapshot.images, snapshot.imagePixels) = imageReader.read(state: state, terminal: terminal, known: knownImageGenerations)
+        }
+        return snapshot
+    }
+
+    /// 今の行が、次の行にソフト折り返しで続くか。
+    private func readRowWraps() -> Bool {
+        var raw: GhosttyRow = 0
+        guard ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_RAW, &raw) == GHOSTTY_SUCCESS else { return false }
+        var wraps = false
+        _ = ghostty_row_get(raw, GHOSTTY_ROW_DATA_WRAP, &wraps)
+        return wraps
     }
 
     /// 今の行のうち、選択されている列の範囲。
@@ -345,10 +380,11 @@ final class RenderStateReader {
 
 extension VTTerminal {
     /// 描画用のスナップショットを作る（変化した行だけ）。
-    public func makeSnapshot(forceFull: Bool = false) throws -> FrameSnapshot {
+    /// - Parameter knownImageGenerations: ビューが中身を持っている画像の世代（その中身は読まない）
+    public func makeSnapshot(forceFull: Bool = false, knownImageGenerations: Set<UInt64> = []) throws -> FrameSnapshot {
         if renderReader == nil {
             renderReader = try RenderStateReader()
         }
-        return try renderReader!.snapshot(of: handle, forceFull: forceFull)
+        return try renderReader!.snapshot(of: handle, forceFull: forceFull, knownImageGenerations: knownImageGenerations)
     }
 }

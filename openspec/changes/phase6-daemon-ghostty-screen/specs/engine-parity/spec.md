@@ -22,7 +22,7 @@ For every agent fixture that has a daemon-generated reference screen (`screen.tx
 
 ### Requirement: Reference screens are reproducible
 
-The reference screens SHALL be generated only by the daemon repository's tooling, and the copy used by Tabghostty SHALL record the daemon revision and libghostty-vt version that produced it. The libghostty-vt version Tabghostty links SHALL be the same version that produced the reference screens; a mismatch SHALL be reported by the parity test instead of silently comparing.
+The reference screens SHALL be generated only by the bundled daemon's tooling (`daemon/`, see bundled-daemon「Reference screen generation」), and the copy used by Tabghostty SHALL record the daemon revision and libghostty-vt version that produced it. The libghostty-vt version Tabghostty links SHALL be the same version that produced the reference screens; a mismatch SHALL be reported by the parity test instead of silently comparing.
 
 #### Scenario: Version mismatch
 

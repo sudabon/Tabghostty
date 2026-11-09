@@ -75,7 +75,7 @@ import TerminalCore
         #expect(connection.enqueue(.resize(sid: "s1", cols: 120, rows: 40)))
         #expect(await waitUntil { server.received.count == 3 })
         #expect(server.received == [
-            #"{"sid":"s1","t":"attach"}"#,
+            #"{"binary":true,"sid":"s1","t":"attach"}"#,
             #"{"data":"bHMN","sid":"s1","t":"input"}"#,
             #"{"cols":120,"rows":40,"sid":"s1","t":"resize"}"#,
         ])

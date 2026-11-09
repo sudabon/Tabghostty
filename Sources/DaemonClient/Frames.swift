@@ -217,6 +217,48 @@ public enum ServerFrame: Equatable, Sendable {
         guard let string, !string.isEmpty, let data = Data(base64Encoded: string) else { return [] }
         return Array(data)
     }
+
+    // MARK: - バイナリのメッセージ（spec: daemon-connection「Binary output frames」）
+
+    /// バイナリのメッセージの種類（byte 0）。
+    ///
+    /// 形式は spec: bundled-daemon「Binary output frames format」（同梱のデーモン `daemon/internal/server/ws_binary.go`）:
+    /// `byte 0` 種類 / `byte 1` sid の長さ N / `byte 2..<2+N` sid（ASCII）/ 残り PTY のバイト列。
+    enum BinaryKind: UInt8 {
+        case output = 0x01
+        /// replay の途中のチャンク。
+        case replay = 0x02
+        /// replay の最後のチャンク（JSON の `done: true`）。
+        case replayDone = 0x03
+    }
+
+    /// バイナリの WebSocket メッセージを読む。
+    ///
+    /// 先頭のバイトが既知の種類でなければ、これまでどおり JSON として読む（バイナリで届いた JSON も受け付ける）。
+    /// どちらとしても読めなければ nil（接続は切らずに無視する）。
+    public static func decode(binaryMessage data: Data) -> ServerFrame? {
+        guard let first = data.first else { return nil }
+        guard let kind = BinaryKind(rawValue: first) else { return decode(data) }
+        return decodeBinary(kind: kind, data)
+    }
+
+    private static func decodeBinary(kind: BinaryKind, _ data: Data) -> ServerFrame? {
+        let start = data.startIndex
+        guard data.count >= 2 else { return nil }
+        let sidLength = Int(data[start + 1])
+        let sidStart = start + 2
+        let payloadStart = sidStart + sidLength
+        guard sidLength > 0, payloadStart <= data.endIndex else { return nil }
+        let sidBytes = data[sidStart..<payloadStart]
+        guard sidBytes.allSatisfy({ $0 < 0x80 }) else { return nil }
+        let sid = String(decoding: sidBytes, as: UTF8.self)
+        let payload = Array(data[payloadStart...])
+        switch kind {
+        case .output: return .output(sid: sid, data: payload)
+        case .replay: return .replay(sid: sid, data: payload, done: false)
+        case .replayDone: return .replay(sid: sid, data: payload, done: true)
+        }
+    }
 }
 
 extension TerminalOutgoingFrame {
@@ -226,6 +268,7 @@ extension TerminalOutgoingFrame {
         var data: String?
         var cols: Int?
         var rows: Int?
+        var binary: Bool?
     }
 
     /// デーモンへ送る JSON（`{"t":"attach","sid":…}` など）。
@@ -233,7 +276,9 @@ extension TerminalOutgoingFrame {
         let body: Body
         switch self {
         case .attach(let sid):
-            body = Body(t: "attach", sid: sid)
+            // output / replay をバイナリのメッセージで受け取れることを宣言する。対応していないデーモンは
+            // このフィールドを無視して JSON で送ってくるので、どちらで動くかは判定しない（phase6 design D4）。
+            body = Body(t: "attach", sid: sid, binary: true)
         case .input(let sid, let bytes):
             body = Body(t: "input", sid: sid, data: Data(bytes).base64EncodedString())
         case .resize(let sid, let cols, let rows):

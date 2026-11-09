@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# go.mitchellh.com/libghostty の cgo（`#cgo pkg-config: libghostty-vt-static`）に、Tabghostty の
+# Vendor/GhosttyVt.xcframework（`make deps` で取得した libghostty-vt）を渡す pkg-config の代わり。
+#
+#   PKG_CONFIG=daemon/scripts/pkg-config CGO_ENABLED=1 go build -tags ghostty ./cmd/webtabinal
+#
+# libghostty-vt-static と libghostty-vt についてだけ答える（pkg-config も Zig も要らない。phase6 design D1）。
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PREFIX="$ROOT/Vendor/GhosttyVt.xcframework/macos-arm64_x86_64"
+
+mode=""
+packages=()
+for arg in "$@"; do
+  case "$arg" in
+    --cflags) mode=cflags ;;
+    --libs) mode=libs ;;
+    --modversion) mode=modversion ;;
+    --exists) mode=exists ;;
+    --static | --) ;;
+    -*) ;;
+    *) packages+=("$arg") ;;
+  esac
+done
+
+if (( ${#packages[@]} == 0 )); then
+  echo "pkg-config (Tabghostty): パッケージ名がありません" >&2
+  exit 1
+fi
+for package in "${packages[@]}"; do
+  case "$package" in
+    libghostty-vt-static | libghostty-vt) ;;
+    *) echo "pkg-config (Tabghostty): 知らないパッケージです: $package" >&2; exit 1 ;;
+  esac
+done
+if [[ ! -f "$PREFIX/libghostty-vt.a" ]]; then
+  echo "pkg-config (Tabghostty): libghostty-vt が見つかりません（$PREFIX）。先に \`make deps\` を実行してください。" >&2
+  exit 1
+fi
+
+case "$mode" in
+  cflags) echo "-I$PREFIX/Headers" ;;
+  libs) echo "-L$PREFIX -lghostty-vt" ;;
+  modversion) sed -n 's/^#define GHOSTTY_VT_VERSION "\(.*\)"$/\1/p' "$PREFIX/Headers/ghostty/vt/version.h" ;;
+  exists | "") ;;
+esac

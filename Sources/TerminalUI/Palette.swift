@@ -11,6 +11,9 @@ public struct Palette: Equatable, Sendable {
     public var background: ColorRGB
     public var cursor: ColorRGB
     public var selection: ColorRGB
+    /// 検索の一致の背景（今の一致は `searchCurrentMatch`）。VS Code の find match の色（下地に合成した値）。
+    public var searchMatch: ColorRGB
+    public var searchCurrentMatch: ColorRGB
     /// 256 色（0〜15 が ANSI 16 色）。
     public var colors: [ColorRGB]
 
@@ -25,6 +28,8 @@ public struct Palette: Equatable, Sendable {
         background: ColorRGB(hex: 0x1e1e1e),
         cursor: ColorRGB(hex: 0xffffff),
         selection: ColorRGB(hex: 0x264f78),
+        searchMatch: ColorRGB(hex: 0x623314),
+        searchCurrentMatch: ColorRGB(hex: 0x515c6a),
         colors: xterm256()
     )
 
@@ -33,6 +38,8 @@ public struct Palette: Equatable, Sendable {
         background: ColorRGB(hex: 0xffffff),
         cursor: ColorRGB(hex: 0x000000),
         selection: ColorRGB(hex: 0xadd6ff),
+        searchMatch: ColorRGB(hex: 0xf8c9aa),
+        searchCurrentMatch: ColorRGB(hex: 0xa8ac94),
         colors: xterm256()
     )
 

@@ -63,7 +63,7 @@ import TerminalCore
             await controller.flushInput()
         }
 
-        let view = TerminalView(fontFamily: "Menlo", fontSize: 14, palette: palette)
+        let view = TerminalView(fontFamily: "Menlo", fontSize: 14, palette: palette, renderer: .coreText)
         view.controller = controller
         view.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
         view.apply(try #require(await controller.makeSnapshot(forceFull: true)))
@@ -113,5 +113,21 @@ import TerminalCore
         // 選択したセル（空白の多い部分）は選択色。選択していないセルには選択色が無い。
         #expect(rendered.count(col: 0, row: 0, width: 5) { Self.distance($0, expected) < 12 } > cellPixels * 2)
         #expect(rendered.count(col: 6, row: 0, width: 5) { Self.distance($0, expected) < 12 } == 0)
+    }
+
+    // phase5 design D1: `TABGHOSTTY_RENDERER` で描画の実装を選ぶ（既定は Metal）。
+    @Test func rendererIsChosenFromTheEnvironment() {
+        #expect(TerminalRendererKind.fromEnvironment([:]) == .metal)
+        #expect(TerminalRendererKind.fromEnvironment(["TABGHOSTTY_RENDERER": "coretext"]) == .coreText)
+        #expect(TerminalRendererKind.fromEnvironment(["TABGHOSTTY_RENDERER": "CoreText"]) == .coreText)
+        #expect(TerminalRendererKind.fromEnvironment(["TABGHOSTTY_RENDERER": "metal"]) == .metal)
+        #expect(TerminalRendererKind.fromEnvironment(["TABGHOSTTY_RENDERER": "vulkan"]) == .metal)
+        #expect(TerminalRendererKind.fromEnvironment(["TABGHOSTTY_RENDERER": ""]) == .metal)
+    }
+
+    @Test func coreTextViewDrawsWithCoreText() {
+        let view = TerminalView(fontFamily: "Menlo", fontSize: 14, palette: .dark, renderer: .coreText)
+        #expect(view.requestedRenderer == .coreText)
+        #expect(view.activeRenderer == .coreText)
     }
 }

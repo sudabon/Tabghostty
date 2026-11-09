@@ -38,8 +38,16 @@ public final class TerminalView: NSView {
                 oldValue?.enqueueFocus(false)
                 controller?.enqueueFocus(true)
             }
+            // 表示しているセッションに変化があったら、止めていた display link を再開する（phase5 design D3）。
+            oldValue?.setRenderObserver(nil)
+            controller?.setRenderObserver { [weak self] in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.wakeDisplayLink() }
+                }
+            }
             resetModel()
             resetInputState()
+            searchSessionDidChange(from: oldValue)
             if let saved = controller?.takeSavedComposition() {
                 restoreComposition(saved)
             }
@@ -73,14 +81,43 @@ public final class TerminalView: NSView {
     /// 最後に知らせたグリッドのサイズ。
     public private(set) var appliedGrid: TerminalController.GridSize?
 
-    // 描画のモデル（最後に受け取ったスナップショットの内容）
-    private var cols = 0
-    private var rows = 0
-    private var cells: [[CellSnapshot]] = []
+    // 描画のモデル（最後に受け取ったスナップショットの内容）。描画の実装（`TerminalRenderer`）が読む。
+    private(set) var cols = 0
+    private(set) var rows = 0
+    private(set) var cells: [[CellSnapshot]] = []
     /// 行ごとの選択されている列の範囲。
-    private var rowSelections: [ClosedRange<Int>?] = []
-    private var frameColors: FrameColors?
+    private(set) var rowSelections: [ClosedRange<Int>?] = []
+    private(set) var frameColors: FrameColors?
     private(set) var cursor: CursorSnapshot?
+    /// viewport の行ごとの検索の一致（`TerminalView+Find.swift`）。
+    private(set) var searchHighlights: [Int: [SearchHighlight]] = [:]
+    /// viewport の中の画像の配置（Kitty Graphics。層、z の順）。
+    private(set) var images: [ImagePlacement] = []
+    /// 中身をもう一度もらいに行った画像の世代（もらえなかったときに、何度も頼まない）。
+    private var requestedImageGenerations: Set<UInt64> = []
+    /// 検索バー（最初に開くときにビューに入れる）。
+    let findBar = FindBarView()
+    /// 検索を頼むたびに増える（遅れて返ってきた古い結果を捨てる）。
+    var searchSequence = 0
+    /// 行ごとの、次の行にソフト折り返しで続くか（素の URL を行をまたいで探す）。
+    private(set) var rowWrapped: [Bool] = []
+    /// Command を押している間、ポインタの下にあるリンク（`TerminalView+Links.swift`）。
+    var hoveredLink: TerminalLink?
+    /// 最後にリンクを探したセル。
+    var lastLinkCell: GridPoint?
+    /// リンクを探すたびに増える（遅れて返ってきた古い結果を捨てる）。
+    var linkLookupSequence = 0
+    /// リンクを開く（テストで差し替える）。
+    public var linkOpener: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// Command を押しているか（テストで差し替える）。
+    var commandKeyIsDown: () -> Bool = { NSEvent.modifierFlags.contains(.command) }
+
+    /// 描画の実装（spec: terminal-rendering「Rendering parity」、phase5 design D1）。
+    private(set) var renderer: any TerminalRenderer
+    /// 求められた描画の実装（`TABGHOSTTY_RENDERER`）。Metal は、シェーダーのコンパイルが終わるまで Core Text で描く。
+    public let requestedRenderer: TerminalRendererKind
+    /// 今使っている描画の実装。
+    public var activeRenderer: TerminalRendererKind { renderer.kind }
 
     // IME（`TerminalView+TextInput.swift`）
     /// 未確定の文字列。空なら変換していない。
@@ -109,27 +146,86 @@ public final class TerminalView: NSView {
     private var displayLink: CADisplayLink?
     private var snapshotInFlight = false
     private var needsFullSnapshot = true
+    /// display link を止める・再開する判断（phase5 design D3）。
+    private(set) var pacer = FramePacer()
+    /// 入力遅延の計測（`TABGHOSTTY_LATENCY_LOG=1` のときだけ。phase5 tasks 3.2）。
+    var latencyProbe = InputLatencyProbe.makeIfEnabled()
 
     private var blinkTimer: Timer?
-    private var blinkVisible = true
+    private(set) var blinkVisible = true
     private var resizeTask: Task<Void, Never>?
     private var windowObservers: [NSObjectProtocol] = []
 
-    private var colorCache: [RGBAKey: CGColor] = [:]
     private var contrastCache: [ColorPair: ColorRGB] = [:]
 
     /// カーソルの点滅間隔（SPEC: 約 530 ms）。
     static let blinkInterval: TimeInterval = 0.53
 
-    public init(fontFamily: String, fontSize: CGFloat, palette: Palette) {
+    /// - Parameter renderer: 描画の実装。既定は環境変数 `TABGHOSTTY_RENDERER`（未設定なら Metal）
+    public convenience init(
+        fontFamily: String,
+        fontSize: CGFloat,
+        palette: Palette,
+        renderer requested: TerminalRendererKind = .fromEnvironment()
+    ) {
+        self.init(fontFamily: fontFamily, fontSize: fontSize, palette: palette, renderer: requested,
+                  metalContext: MetalRenderContextLoader.request)
+    }
+
+    /// Metal の描画に使うものを、作り終わったら（作れなければ nil で）渡す。
+    typealias MetalContextProvider = @MainActor (@escaping @MainActor (MetalRenderContext?) -> Void) -> Void
+
+    /// - Parameter metalContext: Metal の描画に使うものを渡す（テストで差し替える）
+    init(
+        fontFamily: String,
+        fontSize: CGFloat,
+        palette: Palette,
+        renderer requested: TerminalRendererKind,
+        metalContext: MetalContextProvider
+    ) {
         self.fontFamily = fontFamily
         fonts = FontResolver(fontFamily: fontFamily, size: fontSize)
         self.palette = palette
         metrics = CellMetrics.make(font: fonts.regular, scale: NSScreen.main?.backingScaleFactor ?? 2)
+        requestedRenderer = requested
+        // シェーダーのコンパイルが終わるまでは Core Text で描く（phase5 design D1 の Risks）。
+        renderer = CoreTextRenderer()
         super.init(frame: .zero)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        renderer.onNeedsFrame = { [weak self] in self?.wakeDisplayLink() }
+        renderer.install(in: self)
         setUpImageDrop()
+        if requested == .metal {
+            metalContext { [weak self] context in
+                // 作れなかったら Core Text で描き続ける（ログは `MetalRenderContextLoader` が出す）。
+                guard let self, let context, self.renderer.kind != .metal else { return }
+                self.replaceRenderer(with: MetalRenderer(context: context))
+            }
+        }
+    }
+
+    /// Metal のシェーダーのコンパイルを始めておく（`TABGHOSTTY_RENDERER` が Metal のとき）。
+    /// アプリの起動時に呼ぶと、最初のビューを作るまでに終わっていることが多い。
+    public static func preloadRenderer(_ kind: TerminalRendererKind = .fromEnvironment()) {
+        guard kind == .metal else { return }
+        MetalRenderContextLoader.preload()
+    }
+
+    /// 描画の実装を差し替え、全体を描き直す。
+    func replaceRenderer(with next: any TerminalRenderer) {
+        renderer.uninstall()
+        renderer.onNeedsFrame = nil
+        renderer = next
+        next.onNeedsFrame = { [weak self] in self?.wakeDisplayLink() }
+        next.install(in: self)
+        next.invalidateAll()
+        // 新しい実装は画像の中身を持っていないので、もらい直す。
+        requestedImageGenerations.removeAll()
+        if !images.isEmpty {
+            needsFullSnapshot = true
+            wakeDisplayLink()
+        }
     }
 
     @available(*, unavailable)
@@ -160,9 +256,17 @@ public final class TerminalView: NSView {
                 MainActor.assumeIsolated { self?.focusDidChange() }
             })
         }
+        // 最小化したとき・ほかのウィンドウに完全に隠れたときは描かない（点滅も止める。phase5 design D3）。
+        windowObservers.append(center.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.occlusionDidChange() }
+        })
+        // vsync に合わせて tick する（spec: terminal-rendering「Idle efficiency」）。
         let link = displayLink(target: self, selector: #selector(displayLinkFired(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
+        pacer = FramePacer()
         updateMetrics()
         scheduleGridUpdate()
         focusDidChange()
@@ -173,7 +277,7 @@ public final class TerminalView: NSView {
         // Retina と外部モニタの間を移ったら、セルの寸法とグリフを計算し直す（device pixel が変わる）。
         updateMetrics()
         scheduleGridUpdate()
-        needsDisplay = true
+        renderer.layoutChanged()
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
@@ -224,12 +328,15 @@ public final class TerminalView: NSView {
             // 変換中のキーは IME のもの。確定した文字列だけが insertText で届く。
             interpretKeyEvents([event])
         case .send(let text):
+            latencyProbe?.keyDown()
             controller?.enqueueText(text)
         case .encode:
+            latencyProbe?.keyDown()
             if let input = KeyInput(event: event) {
                 controller?.enqueueKey(input)
             }
         case .interpret:
+            latencyProbe?.keyDown()
             interpret(event)
         }
         restartBlink()
@@ -272,6 +379,10 @@ public final class TerminalView: NSView {
     }
 
     public override func flagsChanged(with event: NSEvent) {
+        // Command を押した・離した: ポインタの下のリンクの下線を出す・消す（spec: terminal-links）。
+        if let window {
+            updateLinkHover(at: convert(window.mouseLocationOutsideOfEventStream, from: nil), modifiers: event.modifierFlags)
+        }
         // 修飾キーそのものを押した / 離した（kitty keyboard protocol の「すべてのキーを報告する」で使う）。
         guard let flag = KeyInput.modifier(forKeyCode: event.keyCode) else { return }
         let modifiers = KeyInput.Modifiers(event.modifierFlags)
@@ -307,7 +418,7 @@ public final class TerminalView: NSView {
         guard palette != self.palette else { return }
         self.palette = palette
         contrastCache.removeAll()
-        needsDisplay = true
+        renderer.invalidateAll()
     }
 
     /// フォントを差し替える（`font_family` / `font_size`。spec: settings-window「Configuration changes take effect without restart」）。
@@ -319,7 +430,7 @@ public final class TerminalView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         metrics = CellMetrics.make(font: fonts.regular, scale: scale)
         contrastCache.removeAll()
-        needsDisplay = true
+        renderer.layoutChanged()
         scheduleGridUpdate()
     }
 
@@ -330,7 +441,7 @@ public final class TerminalView: NSView {
         let next = CellMetrics.make(font: fonts.regular, scale: scale)
         guard next != metrics else { return }
         metrics = next
-        needsDisplay = true
+        renderer.layoutChanged()
     }
 
     private func scheduleGridUpdate() {
@@ -354,17 +465,72 @@ public final class TerminalView: NSView {
     // MARK: - スナップショットの取得
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
+        // カーソルの点滅など、スナップショットに依らない変化を描く（Metal。Core Text は AppKit が描く）。
+        renderFrame()
+        requestSnapshotIfNeeded()
+        // 描くものが無い tick が続いたら止める。出力・入力・点滅で `wakeDisplayLink` が再開する。
+        let busy = renderer.needsFrame || snapshotInFlight || needsFullSnapshot || (controller?.needsRender ?? false)
+        if pacer.tick(busy: busy) {
+            link.isPaused = true
+        }
+    }
+
+    /// display link で描く実装（Metal）なら、変化があれば描く。
+    private func renderFrame() {
+        if renderer.renderFrameIfNeeded() {
+            latencyProbe?.framePresented()
+        }
+    }
+
+    /// 描くものができた。止めていた display link を再開する（ウィンドウが見えていなければ止めたまま）。
+    func wakeDisplayLink() {
+        if pacer.activity() {
+            displayLink?.isPaused = false
+        }
+    }
+
+    /// display link が止まっているか（テスト用）。
+    var isDisplayLinkPaused: Bool { displayLink?.isPaused ?? true }
+
+    /// ウィンドウが見えるようになった / 見えなくなった。
+    func occlusionDidChange() {
+        setWindowVisible(window?.occlusionState.contains(.visible) ?? false)
+    }
+
+    func setWindowVisible(_ visible: Bool) {
+        guard visible != pacer.isVisible else { return }
+        let resume = pacer.setVisible(visible)
+        displayLink?.isPaused = !resume
+        if visible {
+            // 隠れている間の変化をまとめて描く。
+            renderer.invalidateAll()
+            restartBlink()
+        } else {
+            stopBlinking()
+        }
+    }
+
+    /// 端末に変化があれば、スナップショットを取りに行く（1 フレームにつき高々 1 回）。
+    private func requestSnapshotIfNeeded() {
         guard let controller, !snapshotInFlight else { return }
         guard needsFullSnapshot || controller.needsRender else { return }
         snapshotInFlight = true
         let full = needsFullSnapshot
         needsFullSnapshot = false
+        let known = renderer.knownImageGenerations
         Task { [weak self] in
-            let snapshot = await controller.makeSnapshot(forceFull: full)
+            let snapshot = await controller.makeSnapshot(forceFull: full, knownImageGenerations: known)
             guard let self else { return }
             self.snapshotInFlight = false
-            guard self.controller === controller, let snapshot else { return }
+            guard self.controller === controller else { return }
+            guard let snapshot else {
+                // 取れなかった（同期出力の保留中など）。全体を求めていたなら、次も全体を求める。
+                if full { self.needsFullSnapshot = true }
+                return
+            }
             self.apply(snapshot)
+            // 同じ vsync の間に描く（次の tick を待たない）。
+            self.renderFrame()
         }
     }
 
@@ -373,10 +539,19 @@ public final class TerminalView: NSView {
         rows = 0
         cells = []
         rowSelections = []
+        rowWrapped = []
+        hoveredLink = nil
+        if !images.isEmpty {
+            images = []
+            renderer.updateImages([], pixels: [:])
+        }
+        requestedImageGenerations.removeAll()
         cursor = nil
         frameColors = nil
+        searchHighlights = [:]
         needsFullSnapshot = true
-        needsDisplay = true
+        renderer.invalidateAll()
+        wakeDisplayLink()
     }
 
     /// スナップショットをモデルに反映し、変わったところだけ再描画を頼む。
@@ -387,6 +562,7 @@ public final class TerminalView: NSView {
             rows = snapshot.rows
             cells = Array(repeating: Array(repeating: .blank, count: cols), count: rows)
             rowSelections = Array(repeating: nil, count: rows)
+            rowWrapped = Array(repeating: false, count: rows)
             redrawAll = true
         }
         if snapshot.colors != frameColors {
@@ -405,23 +581,72 @@ public final class TerminalView: NSView {
             }
             cells[row.y] = rowCells
             rowSelections[row.y] = snapshot.selections[row.y]
+            rowWrapped[row.y] = snapshot.wrappedRows.contains(row.y)
             dirtyRows.insert(row.y)
         }
 
-        if snapshot.cursor != cursor {
-            if let old = cursor { setNeedsDisplay(cursorRect(old)) }
+        if snapshot.searchHighlights != searchHighlights {
+            // 強調が変わった行だけを描き直す（一致の行は、端末の内容が変わっていなくても変わる）。
+            for y in Set(searchHighlights.keys).union(snapshot.searchHighlights.keys)
+            where y >= 0 && y < rows && searchHighlights[y] != snapshot.searchHighlights[y] {
+                dirtyRows.insert(y)
+            }
+            searchHighlights = snapshot.searchHighlights
+        }
+
+        applyImages(snapshot)
+
+        let cursorChanged = snapshot.cursor != cursor
+        if cursorChanged {
+            if let old = cursor { renderer.invalidate(cursorRect(old)) }
             cursor = snapshot.cursor
-            if let new = cursor { setNeedsDisplay(cursorRect(new)) }
+            if let new = cursor { renderer.invalidate(cursorRect(new)) }
             restartBlink()
         }
 
         if redrawAll {
-            needsDisplay = true
-        } else {
-            for y in dirtyRows {
-                setNeedsDisplay(rowRect(y))
+            renderer.invalidateAll()
+        } else if !dirtyRows.isEmpty {
+            renderer.invalidateRows(dirtyRows)
+        }
+        if redrawAll || !dirtyRows.isEmpty || cursorChanged {
+            latencyProbe?.snapshotChanged()
+        }
+        linkRowsChanged(dirtyRows, all: redrawAll)
+    }
+
+    /// 画像の配置を反映する（spec: inline-images）。描画の実装が中身を持っていない画像があれば、もらい直す。
+    private func applyImages(_ snapshot: FrameSnapshot) {
+        if snapshot.images != images || !snapshot.imagePixels.isEmpty {
+            let old = images
+            images = snapshot.images
+            renderer.updateImages(images, pixels: snapshot.imagePixels)
+            for placement in old + images {
+                renderer.invalidate(imageRect(placement))
             }
         }
+        let missing = Set(images.map(\.generation)).subtracting(renderer.knownImageGenerations)
+        if !missing.isEmpty, !missing.isSubset(of: requestedImageGenerations) {
+            requestedImageGenerations.formUnion(missing)
+            needsFullSnapshot = true
+            wakeDisplayLink()
+        }
+    }
+
+    /// 画像を描く矩形（ビューの座標）。画像の大きさは device pixel なので、画面の倍率で割る。
+    func imageRect(_ placement: ImagePlacement) -> NSRect {
+        let scale = metrics.scale
+        return NSRect(
+            x: padding + CGFloat(placement.column) * metrics.width + CGFloat(placement.offsetX) / scale,
+            y: padding + CGFloat(placement.row) * metrics.height + CGFloat(placement.offsetY) / scale,
+            width: CGFloat(placement.pixelWidth) / scale,
+            height: CGFloat(placement.pixelHeight) / scale
+        )
+    }
+
+    /// セルを描く範囲（画像はこの外に描かない）。
+    var gridRect: NSRect {
+        NSRect(x: padding, y: padding, width: CGFloat(gridColumns) * metrics.width, height: CGFloat(gridRows) * metrics.height)
     }
 
     // MARK: - 座標
@@ -446,62 +671,36 @@ public final class TerminalView: NSView {
         )
     }
 
-    private func cursorRect(_ cursor: CursorSnapshot) -> NSRect {
+    func cursorRect(_ cursor: CursorSnapshot) -> NSRect {
         let x = cursor.onWideTail ? max(0, cursor.x - 1) : cursor.x
         return cellRect(x: x, y: cursor.y, width: 2).insetBy(dx: -1, dy: -1)
     }
 
-    // MARK: - 描画（design D6）
+    // MARK: - 描画（phase5 design D1）
 
     public override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let background = defaultBackground
-        context.setFillColor(cgColor(background))
-
+        // Core Text で描くときだけ、ビューのレイヤーに描く（Metal はサブビューの CAMetalLayer に描く）。
+        guard let coreText = renderer as? CoreTextRenderer, let context = NSGraphicsContext.current?.cgContext else { return }
         var rects: UnsafePointer<NSRect>?
         var count = 0
         getRectsBeingDrawn(&rects, count: &count)
         let dirtyRects = (rects != nil && count > 0) ? Array(UnsafeBufferPointer(start: rects, count: count)) : [dirtyRect]
-
-        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-        for rect in dirtyRects {
-            context.setFillColor(cgColor(background))
-            context.fill(rect)
-            drawCells(in: rect, context: context)
-        }
-        drawCursor(dirtyRects: dirtyRects, context: context)
-        drawMarkedText(dirtyRects: dirtyRects, context: context)
+        coreText.draw(dirtyRects: dirtyRects, in: context)
+        latencyProbe?.framePresented()
     }
 
     var defaultForeground: ColorRGB { frameColors?.foreground ?? palette.foreground }
     var defaultBackground: ColorRGB { frameColors?.background ?? palette.background }
-
-    private func drawCells(in dirtyRect: NSRect, context: CGContext) {
-        // 描画の範囲がビューより大きく渡されることがある（オフスクリーンの描画など）。行・列に直す前に bounds に収める。
-        let rect = dirtyRect.intersection(bounds)
-        guard rows > 0, cols > 0, !rect.isNull, !rect.isEmpty else { return }
-        let firstRow = max(0, Int(((rect.minY - padding) / metrics.height).rounded(.down)))
-        let lastRow = min(rows - 1, Int(((rect.maxY - padding) / metrics.height).rounded(.up)))
-        // 2 セル幅の文字が範囲の手前から始まることがあるので、1 セル広げる。
-        let firstCol = max(0, Int(((rect.minX - padding) / metrics.width).rounded(.down)) - 1)
-        let lastCol = min(cols - 1, Int(((rect.maxX - padding) / metrics.width).rounded(.up)))
-        guard firstRow <= lastRow, firstCol <= lastCol else { return }
-
-        context.saveGState()
-        context.clip(to: rect)
-        for y in firstRow...lastRow {
-            drawRow(y, columns: firstCol...lastCol, context: context)
-        }
-        context.restoreGState()
-    }
+    /// カーソルの色（プログラムが OSC 12 で変えた色、無ければ配色の色）。
+    var cursorColor: ColorRGB { frameColors?.cursor ?? palette.cursor }
 
     /// セルの色（反転・太字の明るい色・コントラスト補正を反映したもの）。
-    private struct ResolvedColors {
+    struct ResolvedColors: Equatable {
         var foreground: ColorRGB
         var background: ColorRGB
     }
 
-    private func resolveColors(_ cell: CellSnapshot) -> ResolvedColors {
+    func resolveColors(_ cell: CellSnapshot) -> ResolvedColors {
         var foreground = cell.foreground ?? defaultForeground
         // xterm.js の既定（drawBoldTextInBrightColors）と同じく、太字の ANSI 0〜7 は明るい色で描く。
         if cell.attributes.contains(.bold), let index = cell.foregroundPaletteIndex, index < 8 {
@@ -515,7 +714,7 @@ public final class TerminalView: NSView {
         return ResolvedColors(foreground: contrastAdjusted(foreground, on: background), background: background)
     }
 
-    private func contrastAdjusted(_ foreground: ColorRGB, on background: ColorRGB) -> ColorRGB {
+    func contrastAdjusted(_ foreground: ColorRGB, on background: ColorRGB) -> ColorRGB {
         let key = ColorPair(foreground: foreground, background: background)
         if let cached = contrastCache[key] { return cached }
         let adjusted = ContrastAdjuster.adjust(foreground: foreground, background: background)
@@ -523,283 +722,21 @@ public final class TerminalView: NSView {
         return adjusted
     }
 
-    private func drawRow(_ y: Int, columns: ClosedRange<Int>, context: CGContext) {
-        let row = cells[y]
-        let resolved = columns.map { resolveColors(row[$0]) }
-        let rowTop = padding + CGFloat(y) * metrics.height
-
-        // 1. 同じ背景色が続く区間ごとに塗る。
-        var start = columns.lowerBound
-        while start <= columns.upperBound {
-            let color = resolved[start - columns.lowerBound].background
-            var end = start
-            while end + 1 <= columns.upperBound, resolved[end + 1 - columns.lowerBound].background == color {
-                end += 1
-            }
-            if color != defaultBackground {
-                context.setFillColor(cgColor(color))
-                context.fill(NSRect(
-                    x: padding + CGFloat(start) * metrics.width, y: rowTop,
-                    width: CGFloat(end - start + 1) * metrics.width, height: metrics.height
-                ))
-            }
-            start = end + 1
-        }
-
-        // 選択範囲は配色の選択色で塗る（文字の色はそのまま）。
-        if y < rowSelections.count, let selected = rowSelections[y], selected.overlaps(columns) {
-            let lower = max(selected.lowerBound, columns.lowerBound)
-            let upper = min(selected.upperBound, columns.upperBound)
-            context.setFillColor(cgColor(palette.selection))
-            context.fill(NSRect(
-                x: padding + CGFloat(lower) * metrics.width, y: rowTop,
-                width: CGFloat(upper - lower + 1) * metrics.width, height: metrics.height
-            ))
-        }
-
-        // 2. 同じスタイルが続く区間ごとにグリフを描く。
-        var run: [Int] = []
-        var runKey: TextRunKey?
-        func flush() {
-            if let runKey, !run.isEmpty {
-                drawText(run.map { row[$0] }, columns: run, key: runKey, rowTop: rowTop, context: context)
-            }
-            run.removeAll(keepingCapacity: true)
-        }
-        for x in columns {
-            let cell = row[x]
-            guard cell.width != .spacerTail, cell.width != .spacerHead, !cell.text.isEmpty,
-                  !cell.attributes.contains(.invisible) else {
-                flush()
-                runKey = nil
-                continue
-            }
-            let key = TextRunKey(
-                font: fonts.fontForText(cell.text, bold: cell.attributes.contains(.bold), italic: cell.attributes.contains(.italic)),
-                color: resolved[x - columns.lowerBound].foreground,
-                faint: cell.attributes.contains(.faint)
-            )
-            if key != runKey {
-                flush()
-                runKey = key
-            }
-            run.append(x)
-        }
-        flush()
-
-        // 3. 下線・打ち消し線・上線。
-        drawDecorations(row, columns: columns, resolved: resolved, rowTop: rowTop, context: context)
-    }
-
-    struct TextRunKey: Equatable {
-        let font: CTFont
-        let color: ColorRGB
-        let faint: Bool
-
-        static func == (lhs: TextRunKey, rhs: TextRunKey) -> Bool {
-            lhs.font == rhs.font && lhs.color == rhs.color && lhs.faint == rhs.faint
-        }
-    }
-
-    /// 1 つのスタイルの区間を描く。グリフは、そのグリフの元の文字があるセルの位置に置く（グリッドからずれない）。
-    func drawText(
-        _ runCells: [CellSnapshot],
-        columns: [Int],
-        key: TextRunKey,
-        rowTop: CGFloat,
-        context: CGContext,
-        colorOverride: ColorRGB? = nil
-    ) {
-        var text = ""
-        var columnForUTF16: [Int] = []
-        for (cell, column) in zip(runCells, columns) {
-            text += cell.text
-            columnForUTF16.append(contentsOf: repeatElement(column, count: cell.text.utf16.count))
-        }
-        guard !text.isEmpty else { return }
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            NSAttributedString.Key(kCTFontAttributeName as String): key.font,
-            NSAttributedString.Key(kCTLigatureAttributeName as String): 0,
-        ]
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
-        let color = colorOverride ?? key.color
-        context.setFillColor(cgColor(color, alpha: key.faint ? 0.5 : 1))
-        let baseline = rowTop + metrics.baselineOffset
-
-        for glyphRun in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
-            let count = CTRunGetGlyphCount(glyphRun)
-            guard count > 0 else { continue }
-            var glyphs = [CGGlyph](repeating: 0, count: count)
-            var positions = [CGPoint](repeating: .zero, count: count)
-            var indices = [CFIndex](repeating: 0, count: count)
-            let range = CFRange(location: 0, length: count)
-            CTRunGetGlyphs(glyphRun, range, &glyphs)
-            CTRunGetPositions(glyphRun, range, &positions)
-            CTRunGetStringIndices(glyphRun, range, &indices)
-            let runAttributes = CTRunGetAttributes(glyphRun) as NSDictionary
-            let runFont = runAttributes[kCTFontAttributeName as String].map { $0 as! CTFont } ?? key.font
-
-            // セルの中での相対位置（結合文字など）は保ち、セルの先頭はグリッドに合わせる。
-            //
-            // CTFontDrawGlyphs の位置はテキスト空間の座標で、テキスト行列（上下を反転している。`draw(_:)`）を通して
-            // ビューの座標になる。ビューの y（下向き）を渡すとビューの外（上）に描かれてしまうので、y の符号を反転して渡す。
-            var cellOrigin: [Int: CGFloat] = [:]
-            var placed = [CGPoint](repeating: .zero, count: count)
-            for index in 0..<count {
-                let utf16Index = min(max(0, indices[index]), columnForUTF16.count - 1)
-                let column = columnForUTF16[utf16Index]
-                let origin = cellOrigin[column] ?? positions[index].x
-                cellOrigin[column] = origin
-                let viewY = baseline - positions[index].y
-                placed[index] = CGPoint(
-                    x: padding + CGFloat(column) * metrics.width + (positions[index].x - origin),
-                    y: -viewY
-                )
-            }
-            CTFontDrawGlyphs(runFont, glyphs, placed, count, context)
-        }
-    }
-
-    private func drawDecorations(
-        _ row: [CellSnapshot],
-        columns: ClosedRange<Int>,
-        resolved: [ResolvedColors],
-        rowTop: CGFloat,
-        context: CGContext
-    ) {
-        let font = fonts.regular as CTFont
-        let thickness = max(1 / metrics.scale, CTFontGetUnderlineThickness(font).rounded(.toNearestOrAwayFromZero, scale: metrics.scale))
-        let baseline = rowTop + metrics.baselineOffset
-        let underlineY = min(rowTop + metrics.height - thickness, baseline - CTFontGetUnderlinePosition(font) + thickness / 2)
-        let strikeY = (baseline - CTFontGetXHeight(font) / 2).rounded(.toNearestOrAwayFromZero, scale: metrics.scale)
-
-        for x in columns {
-            let cell = row[x]
-            guard cell.width != .spacerTail, !cell.attributes.contains(.invisible) else { continue }
-            let hasLine = cell.underline != .none || cell.attributes.contains(.strikethrough) || cell.attributes.contains(.overline)
-            guard hasLine else { continue }
-            let span = cell.width == .wide ? 2 : 1
-            let left = padding + CGFloat(x) * metrics.width
-            let width = CGFloat(span) * metrics.width
-            let colors = resolved[x - columns.lowerBound]
-            let alpha: CGFloat = cell.attributes.contains(.faint) ? 0.5 : 1
-
-            if cell.underline != .none {
-                let color = cell.underlineColor ?? colors.foreground
-                drawUnderline(cell.underline, x: left, width: width, y: underlineY, thickness: thickness,
-                              color: cgColor(color, alpha: alpha), context: context)
-            }
-            context.setFillColor(cgColor(colors.foreground, alpha: alpha))
-            if cell.attributes.contains(.strikethrough) {
-                context.fill(NSRect(x: left, y: strikeY - thickness / 2, width: width, height: thickness))
-            }
-            if cell.attributes.contains(.overline) {
-                context.fill(NSRect(x: left, y: rowTop, width: width, height: thickness))
-            }
-        }
-    }
-
-    private func drawUnderline(
-        _ style: UnderlineStyle,
-        x: CGFloat,
-        width: CGFloat,
-        y: CGFloat,
-        thickness: CGFloat,
-        color: CGColor,
-        context: CGContext
-    ) {
-        context.setFillColor(color)
-        context.setStrokeColor(color)
-        switch style {
-        case .none:
-            return
-        case .single:
-            context.fill(NSRect(x: x, y: y, width: width, height: thickness))
-        case .double:
-            context.fill(NSRect(x: x, y: y - thickness, width: width, height: thickness))
-            context.fill(NSRect(x: x, y: y + thickness, width: width, height: thickness))
-        case .curly:
-            let amplitude = max(thickness, metrics.height * 0.06)
-            let path = CGMutablePath()
-            path.move(to: CGPoint(x: x, y: y))
-            let step = metrics.width / 2
-            var position = x
-            var up = true
-            while position < x + width {
-                let next = min(position + step, x + width)
-                path.addQuadCurve(
-                    to: CGPoint(x: next, y: y),
-                    control: CGPoint(x: (position + next) / 2, y: y + (up ? -amplitude : amplitude))
-                )
-                position = next
-                up.toggle()
-            }
-            context.setLineWidth(thickness)
-            context.addPath(path)
-            context.strokePath()
-        case .dotted, .dashed:
-            context.saveGState()
-            context.setLineWidth(thickness)
-            let dash: [CGFloat] = style == .dotted ? [thickness, thickness * 2] : [metrics.width * 0.4, metrics.width * 0.2]
-            context.setLineDash(phase: 0, lengths: dash)
-            context.move(to: CGPoint(x: x, y: y + thickness / 2))
-            context.addLine(to: CGPoint(x: x + width, y: y + thickness / 2))
-            context.strokePath()
-            context.restoreGState()
-        }
-    }
-
-    // MARK: - カーソル（spec: terminal-rendering「Cursor」）
-
-    private func drawCursor(dirtyRects: [NSRect], context: CGContext) {
-        guard let cursor, cursor.visible, cursor.y >= 0, cursor.y < rows, cursor.x >= 0, cursor.x < cols else { return }
+    /// カーソルを描くセル（2 セル幅の文字の 2 セル目にいれば 1 セル目）と幅。描かないときは nil。
+    ///
+    /// フォーカス中だけ点滅し、消灯中は nil。フォーカスが無いときは点滅しない中抜きのブロック。
+    var visibleCursor: (x: Int, y: Int, span: Int, shape: CursorShape)? {
+        guard let cursor, cursor.visible, cursor.y >= 0, cursor.y < rows, cursor.x >= 0, cursor.x < cols else { return nil }
         let focused = hasKeyboardFocus
-        // フォーカス中だけ点滅する。フォーカスが無いときは点滅しない中抜きのブロック。
-        if focused && cursor.blinking && !blinkVisible { return }
-
+        if focused && cursor.blinking && !blinkVisible { return nil }
         let x = cursor.onWideTail ? max(0, cursor.x - 1) : cursor.x
-        let cell = cells[cursor.y][x]
-        let span = cell.width == .wide ? 2 : 1
-        let rect = cellRect(x: x, y: cursor.y, width: span)
-        guard dirtyRects.contains(where: { $0.intersects(rect) }) else { return }
-
-        let color = frameColors?.cursor ?? palette.cursor
-        let shape = focused ? cursor.shape : .hollowBlock
-        let line = max(1 / metrics.scale, (1 as CGFloat).rounded(.toNearestOrAwayFromZero, scale: metrics.scale))
-
-        context.saveGState()
-        context.clip(to: rect)
-        switch shape {
-        case .block:
-            context.setFillColor(cgColor(color))
-            context.fill(rect)
-            // カーソルの下の文字は、セルの背景色で描く。
-            if !cell.text.isEmpty, !cell.attributes.contains(.invisible) {
-                let key = TextRunKey(
-                    font: fonts.fontForText(cell.text, bold: cell.attributes.contains(.bold), italic: cell.attributes.contains(.italic)),
-                    color: resolveColors(cell).background,
-                    faint: false
-                )
-                drawText([cell], columns: [x], key: key, rowTop: rect.minY, context: context)
-            }
-        case .underline:
-            context.setFillColor(cgColor(color))
-            context.fill(NSRect(x: rect.minX, y: rect.maxY - 2 * line, width: rect.width, height: 2 * line))
-        case .bar:
-            context.setFillColor(cgColor(color))
-            context.fill(NSRect(x: rect.minX, y: rect.minY, width: 2 * line, height: rect.height))
-        case .hollowBlock:
-            context.setStrokeColor(cgColor(color))
-            context.setLineWidth(line)
-            context.stroke(rect.insetBy(dx: line / 2, dy: line / 2))
-        }
-        context.restoreGState()
+        let span = cells[cursor.y][x].width == .wide ? 2 : 1
+        return (x, cursor.y, span, focused ? cursor.shape : .hollowBlock)
     }
 
     /// - Parameter isFirstResponder: first responder が変わる途中なら、その結果。nil なら今の状態を読む
     private func focusDidChange(isFirstResponder: Bool? = nil) {
-        if let cursor { setNeedsDisplay(cursorRect(cursor)) }
+        if let cursor { renderer.invalidate(cursorRect(cursor)) }
         restartBlink()
         let focused = window?.isKeyWindow == true && (isFirstResponder ?? (window?.firstResponder === self))
         if focused {
@@ -815,7 +752,8 @@ public final class TerminalView: NSView {
     /// 点滅を表示の状態からやり直す（キー入力やカーソルの移動のあと）。
     func restartBlink() {
         blinkVisible = true
-        let shouldBlink = hasKeyboardFocus && (cursor?.blinking ?? false) && (cursor?.visible ?? false)
+        // 点滅は点灯と消灯を切り替えるときだけ描く（約 530 ms に 1 回）。ウィンドウが見えていなければ点滅しない。
+        let shouldBlink = pacer.isVisible && hasKeyboardFocus && (cursor?.blinking ?? false) && (cursor?.visible ?? false)
         guard shouldBlink else {
             stopBlinking()
             return
@@ -837,29 +775,14 @@ public final class TerminalView: NSView {
     private func toggleBlink() {
         blinkVisible.toggle()
         // カーソルのセルだけを再描画する。
-        if let cursor { setNeedsDisplay(cursorRect(cursor)) }
+        if let cursor { renderer.invalidate(cursorRect(cursor)) }
     }
 
     // MARK: - 色
 
-    private struct RGBAKey: Hashable {
-        let color: ColorRGB
-        let alpha: CGFloat
-    }
-
     private struct ColorPair: Hashable {
         let foreground: ColorRGB
         let background: ColorRGB
-    }
-
-    func cgColor(_ color: ColorRGB, alpha: CGFloat = 1) -> CGColor {
-        let key = RGBAKey(color: color, alpha: alpha)
-        if let cached = colorCache[key] { return cached }
-        let value = CGColor(
-            srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: alpha
-        )
-        colorCache[key] = value
-        return value
     }
 }
 

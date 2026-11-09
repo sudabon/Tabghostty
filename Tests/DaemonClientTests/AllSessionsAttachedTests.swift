@@ -302,3 +302,37 @@ private final class WeakController: Sendable {
     weak let value: TerminalController?
     init(_ value: TerminalController?) { self.value = value }
 }
+
+/// spec: terminal-rendering「Responsiveness under heavy output」— 受信ループは書き込みを待たない（phase5 design D2）。
+@MainActor
+@Suite struct ReceiveLoopDoesNotWaitTests {
+    final class ConnectedSink: TerminalFrameSink, @unchecked Sendable {
+        func enqueue(_ frame: TerminalOutgoingFrame) -> Bool { true }
+    }
+
+    @Test func outputFramesAreQueuedWithoutWaitingForTheWrite() async throws {
+        let sink = ConnectedSink()
+        let coordinator = SessionCoordinator(connection: WSConnection(port: 1, token: "t"), api: MockSessionAPI()) { sid, _ in
+            try TerminalController(sid: sid, cols: 160, rows: 50, maxScrollback: 1000, colors: nil, sink: sink)
+        }
+        await coordinator.handle(.frame(.sessions([SessionInfo(id: "busy"), SessionInfo(id: "quiet")])))
+        await coordinator.handle(.frame(.replay(sid: "busy", data: [], done: true)))
+        await coordinator.handle(.frame(.replay(sid: "quiet", data: [], done: true)))
+        let busy = try #require(coordinator.controller(for: "busy"))
+        let quiet = try #require(coordinator.controller(for: "quiet"))
+        await busy.waitUntilIncomingIsWritten()
+        await quiet.waitUntilIncomingIsWritten()
+
+        let line = Array("0123456789 the quick brown fox jumps over the lazy dog\r\n".utf8)
+        var big: [UInt8] = []
+        while big.count < 32 << 20 { big += line }
+        await coordinator.handle(.frame(.output(sid: "busy", data: big)))
+        // 書き込みを待たずに戻るので、次のフレーム（ほかのセッションのエコー）をすぐに処理できる。
+        #expect(busy.pendingOutputBytes > 0)
+        await coordinator.handle(.frame(.output(sid: "quiet", data: Array("echo".utf8))))
+        await quiet.waitUntilIncomingIsWritten()
+        #expect(await quiet.plainText() == "echo")
+        await busy.waitUntilIncomingIsWritten()
+        #expect(busy.pendingOutputBytes == 0)
+    }
+}

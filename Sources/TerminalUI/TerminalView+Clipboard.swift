@@ -44,6 +44,8 @@ extension TerminalView: @preconcurrency NSMenuItemValidation {
         case #selector(copy(_:)), #selector(paste(_:)):
             // 選択が空でも Copy は有効にしておく（押しても何もしないだけ。Web 版と同じ）。
             return controller != nil && !hasMarkedText()
+        case #selector(showFindBar(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)):
+            return controller != nil
         default:
             return true
         }

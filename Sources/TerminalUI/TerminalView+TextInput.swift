@@ -197,41 +197,28 @@ extension TerminalView: @preconcurrency NSTextInputClient {
     private func invalidateMarkedText() {
         guard hasMarkedText() else { return }
         let origin = markedTextOrigin
-        setNeedsDisplay(rowRect(origin.y))
+        renderer.invalidate(rowRect(origin.y))
     }
 
-    /// 未確定の文字列をカーソルの位置に重ねて描く（背景で塗り、下線を付ける。選ばれている文節は太い下線）。
-    func drawMarkedText(dirtyRects: [NSRect], context: CGContext) {
-        guard hasMarkedText() else { return }
+    /// 未確定の文字列を、書記素ごとに置くセル（右端を越える分は含めない）。描画の実装が読む。
+    var markedTextCells: [MarkedTextCell] {
+        guard hasMarkedText() else { return [] }
         let origin = markedTextOrigin
-        let rowArea = rowRect(origin.y)
-        guard dirtyRects.contains(where: { $0.intersects(rowArea) }) else { return }
-
-        let foreground = defaultForeground
-        let thickness = max(1 / metrics.scale, (1 as CGFloat).rounded(.toNearestOrAwayFromZero, scale: metrics.scale))
         let selected = markedSelectedRange
-        context.saveGState()
-        context.clip(to: rowArea)
+        var cells: [MarkedTextCell] = []
         for item in markedTextLayout {
             let column = origin.x + item.column
             // 右端を越える分は描かない。
             guard column + item.width <= gridColumns else { break }
-            let rect = cellRect(x: column, y: origin.y, width: item.width)
-            context.setFillColor(cgColor(defaultBackground))
-            context.fill(rect)
-
-            var cell = CellSnapshot.blank
-            cell.text = item.text
-            cell.width = item.width == 2 ? .wide : .narrow
-            let key = TextRunKey(font: fonts.fontForText(item.text, bold: false, italic: false), color: foreground, faint: false)
-            drawText([cell], columns: [column], key: key, rowTop: rect.minY, context: context)
-
-            let isSelected = selected.length > 0 && NSLocationInRange(item.utf16Offset, selected)
-            let lineHeight = isSelected ? thickness * 2 : thickness
-            context.setFillColor(cgColor(foreground))
-            context.fill(NSRect(x: rect.minX, y: rect.maxY - lineHeight - thickness, width: rect.width, height: lineHeight))
+            cells.append(MarkedTextCell(
+                text: item.text,
+                x: column,
+                y: origin.y,
+                width: item.width,
+                isSelected: selected.length > 0 && NSLocationInRange(item.utf16Offset, selected)
+            ))
         }
-        context.restoreGState()
+        return cells
     }
 
     private static func plainString(_ value: Any) -> String {

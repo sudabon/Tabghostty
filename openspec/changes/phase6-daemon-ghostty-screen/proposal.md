@@ -15,35 +15,36 @@ Phase 5 の時点では、画面を解釈するエンジンがデーモンとク
 
 ## What Changes
 
-この change は、2 つのリポジトリにまたがる。デーモン側の実装は webtabinal の OpenSpec change として起票して実装する（Tabghostty をクライアント専用にするという方針に合わせるため）。この change では、Tabghostty 側の実装と、webtabinal 側に渡す変更案を管理する。
+**方針の変更（2026-11-09）**: 当初は、デーモンの変更を webtabinal リポジトリの change として実装する予定だった。しかし、webtabinal は変更しないことになった。そこで、デーモンの Go のコードを Tabghostty の `daemon/` に取り込み、その中で変更する。Tabghostty.app に同梱するデーモンは、この取り込んだコピーからビルドする。webtabinal のソースは変更しない。
 
-**webtabinal 側**（design.md に変更案を書き、webtabinal で別の change として起票する）:
-
-- `internal/vtscreen/ghostty.go`
+- **デーモンの取り込み**（`daemon/`）
+  - webtabinal `6dca08f` の `go.mod`、`go.sum`、`cmd/`、`internal/`、`tests/fixtures/agents/` をコピーする。
+  - 取り込み元のコミットと、Tabghostty で加えた変更を `daemon/UPSTREAM.md` に記録する。
+  - Web 版の画面（`web/`）は取り込まない。`make app` で、これまでどおり `../webtabinal` の Web 版をビルドし、その成果物をデーモンに埋め込む。
+- **libghostty-vt 版の画面モデル**（`daemon/internal/vtscreen/ghostty.go`）
   - ビルドタグ `ghostty` を付けたときだけ有効にする。
   - `Screen` インタフェースを `go.mitchellh.com/libghostty` で実装する。
-  - 既定のビルドは、これまでどおり純 Go のまま。
-- フィクスチャの最終画面を書き出す仕組み
-  - テスト用の `-update-screens` を使い、各フィクスチャに `screen.txt` を生成する。
-- バイナリフレーム
+  - リンクする libghostty-vt は、Tabghostty が使っている `Vendor/GhosttyVt.xcframework`（1.0.0）。pkg-config の代わりの小さなスクリプトで渡すので、zig と pkg-config は要らない。
+  - タグを付けない既定のビルドは、これまでどおり純 Go のまま。`make app` は `ghostty` タグでビルドする。
+- **フィクスチャの最終画面を書き出す仕組み**
+  - テスト用のフラグ `-update-screens` で、各フィクスチャに `screen.txt` と `screen.meta.json` を生成する。
+- **バイナリフレーム**
   - クライアントが `attach` で `binary: true` を宣言した sid についてだけ、`output` / `replay` をバイナリのメッセージで送る。
-
-**Tabghostty 側**:
-
-- **バイナリフレームの受信**
+- **Tabghostty 側: バイナリフレームの受信**
   - `attach` に `binary: true` を付け、バイナリのメッセージを解釈する。
-  - 古いデーモンは `binary` を無視して JSON で送ってくるので、両方を受け付けて自動的にどちらでも動くようにする。
-- **エンジンの一致検証**
-  - webtabinal が生成した `screen.txt` をフィクスチャとして取り込む。
+  - 宣言を無視するデーモン（webtabinal 本体や古い Tabghostty の同梱版）は JSON で送ってくるので、両方を受け付ける。
+- **Tabghostty 側: エンジンの一致検証**
+  - `daemon/` が生成した `screen.txt` をフィクスチャとして取り込む。
   - Tabghostty のエンジンで最終画面を作り、`screen.txt` と比べるテストを追加する（SPEC §8.1 の「フィクスチャ replay」）。
 - **Snapshot を使った replay の検討**
-  - Terminal Snapshot で replay する方式について、検討した結果を記録する。今の replay は、リングバッファのバイト列を境界を考えずに送るので、壊れたシーケンスから始まることがある。それを根本から解消できる方式である。
+  - Terminal Snapshot で replay する方式を検討した結果を記録する。今の replay は、リングバッファのバイト列を境界を考えずに送るので、壊れたシーケンスから始まることがある。Snapshot は、それを根本から解消できる方式である。
   - 結果は `docs/adr/0001-snapshot-replay.md` に書く。実装は、この change の範囲に含めない。
 
 ## Capabilities
 
 ### New Capabilities
 
+- `bundled-daemon`: Tabghostty が同梱するデーモン（`daemon/`）の、libghostty-vt 版の画面モデル、バイナリフレームの形式、最終画面の生成。
 - `engine-parity`: Tabghostty のエンジンとデーモンの画面モデルで、表示が一致することを検証する。
 
 ### Modified Capabilities
@@ -54,17 +55,18 @@ Phase 5 の change を先に archive しておくこと。
 
 ## Impact
 
-- **webtabinal**
-  - `internal/vtscreen/`（新しいファイルを追加。ビルドタグで隔離する）
-  - `internal/server/ws.go`（`attach` の `binary` と、バイナリの送信）
-  - フィクスチャ用のテスト
-  - `go.mod`（`go.mitchellh.com/libghostty` をコミットで固定する）
-  - これらは webtabinal 側の change で扱う。
 - **Tabghostty**
+  - `daemon/`（新規。Go のモジュール。非テスト約 9,000 行、テスト約 11,000 行、フィクスチャ）
   - `DaemonClient` の `WSConnection`
-  - `TerminalCoreTests`
-  - `Tests/Fixtures`
-  - `scripts/sync-fixtures.sh`
+  - `TerminalCore`（`ScreenNormalizer`）と `TerminalCoreTests`
+  - `Tests/Fixtures`、`scripts/sync-fixtures.sh`（取り込み元を `daemon/` にする）
+  - `scripts/build-app.sh` と `Makefile`（同梱するデーモンを `daemon/` から `ghostty` タグでビルドする）
   - `docs/adr/`
-- **互換性**: バイナリフレームは、クライアントが宣言したときだけ使われる。そのため、ブラウザ版や古い Tabghostty は影響を受けない。
-- **依存**: デーモンを `ghostty` タグでビルドするには、cgo と libghostty が必要になる。既定のビルドには入れない。
+- **webtabinal**: 変更しない。`make app` は、Web 版の画面をビルドするためだけに `../webtabinal` を使う。
+- **保守**: webtabinal 本体の修正（エージェントの検出など）は、自動では Tabghostty の同梱版に入らない。取り込むときは `daemon/UPSTREAM.md` の手順に従う。
+- **互換性**
+  - バイナリフレームは、クライアントが宣言したときだけ使われる。ブラウザ版は影響を受けない。
+  - 同梱のデーモンは、webtabinal 本体のデーモンと同じ設定ファイルとプロトコルを使う。
+- **依存**
+  - 同梱のデーモンをビルドするには、cgo と `Vendor/GhosttyVt.xcframework`（`make deps`）が必要になる。
+  - 既定のビルド（タグなし）には、これらは要らない。
