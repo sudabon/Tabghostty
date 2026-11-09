@@ -6,7 +6,7 @@ VENDOR_XCFRAMEWORK := Vendor/GhosttyVt.xcframework
 SWIFT_TESTING_PLUGIN_DIR := $(shell d="$$(dirname "$$(xcrun --find swift 2>/dev/null)")/../lib/swift/host/plugins/testing"; [ -d "$$d" ] && cd "$$d" && pwd)
 SWIFT_TEST_FLAGS := $(if $(SWIFT_TESTING_PLUGIN_DIR),-Xswiftc -plugin-path -Xswiftc $(SWIFT_TESTING_PLUGIN_DIR))
 
-.PHONY: deps build test test-tsan check-deps fixtures app daemon daemon-test screens
+.PHONY: deps build test test-tsan check-deps fixtures app install daemon daemon-test screens
 
 ## libghostty-vt を取得・検証して Vendor/ に置く
 deps:
@@ -36,6 +36,10 @@ test-tsan: check-deps
 ## build/Tabghostty.app を作る（daemon/ を ghostty タグでビルドして同梱する。Web 版の画面は WEBTABINAL_DIR から。WEBTABINAL_DAEMON でビルド済みを指定）
 app: check-deps
 	bash scripts/build-app.sh
+
+## build/Tabghostty.app を作り、起動中の Tabghostty を終了して /Applications/Tabghostty.app に置き換える（デーモンとセッションは止めない。TABGHOSTTY_INSTALL_DIR で置き換える先を変えられる）
+install: app
+	bash scripts/install-app.sh
 
 # 同梱するデーモン（daemon/。phase6 design D7）は、Vendor/ の libghostty-vt に cgo でリンクする。
 # pkg-config の代わりに daemon/scripts/pkg-config を使う（pkg-config も Zig も要らない）。

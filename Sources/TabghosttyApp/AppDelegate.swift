@@ -15,7 +15,7 @@ import UserNotifications
 /// 設定は `ConfigStore` に置き、アプリが前面に来たとき・設定画面を開いたとき・再接続したときに読み直す
 /// （phase4 design D4）。通知のクリックは `NotificationActivationCoordinator` でタブの選択につなぐ（design D2）。
 @MainActor
-public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, TabMenuActions {
+public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, TabMenuActions, AppMenuActions {
     private var windowController: MainWindowController?
     private var coordinator: SessionCoordinator?
     private var shell: TabShellController?
@@ -249,6 +249,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         Task { await shell.config.reload() }
     }
 
+    // MARK: - About（spec: app-shell「Version information in About」）
+
+    /// About パネルを出す。接続する前（起動失敗の画面）でも開ける。
+    @objc public func showAboutPanel(_ sender: Any?) {
+        AboutPanel.show()
+    }
+
     // MARK: - メニューの操作（spec: keyboard-shortcuts「Command shortcuts」、tab-sidebar「Sidebar collapse」）
 
     @objc public func newTab(_ sender: Any?) {
@@ -286,6 +293,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
     func openSettings(_ sender: Any?)
 }
 
+/// アプリメニューから送る操作（target を nil にして、レスポンダチェーンの `AppDelegate` に届ける）。
+@MainActor
+@objc protocol AppMenuActions {
+    func showAboutPanel(_ sender: Any?)
+}
+
 /// アプリメニュー（spec: app-shell「Application menu」）。
 @MainActor
 enum AppMenu {
@@ -297,9 +310,10 @@ enum AppMenu {
         let appMenu = NSMenu(title: appName)
         appItem.submenu = appMenu
 
+        // About パネル（spec: app-shell「Version information in About」）。バージョンと同梱のデーモンを出す。
         appMenu.addItem(
             withTitle: "About \(appName)",
-            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            action: #selector(AppMenuActions.showAboutPanel(_:)),
             keyEquivalent: ""
         )
         appMenu.addItem(.separator())

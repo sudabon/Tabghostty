@@ -11,7 +11,7 @@
 ## 2. Tabghostty 側: バイナリフレームの受信（spec: daemon-connection）
 
 - [x] 2.1 `WSConnection` が `.data` のメッセージを受け取れるようにし、D3 の形式をデコードして `ServerFrame` に変換する。あわせて、`attach` に `binary: true` を付ける。モック WS で「JSON だけ」「バイナリだけ」「両方が混ざる」の 3 通りで、同じ画面になること、replay を最後まで受け取ると live に移ることをテストで確認する。Go 側のエンコードと Swift 側のデコードが、同じバイト列で一致することも確認する
-- [ ] 2.2 バイナリフレームに対応していないデーモン（webtabinal 本体の `6dca08f` 相当）に接続しても、これまでどおり動くことを確認する（要手動確認）
+- [x] 2.2 バイナリフレームに対応していないデーモン（webtabinal 本体の `6dca08f` 相当）に接続しても、これまでどおり動くことを確認する（要手動確認）
 
 ## 3. 同梱するデーモン（spec: bundled-daemon、build-system）
 
@@ -19,7 +19,7 @@
 - [x] 3.2 `-update-screens` で `screen.txt` と `screen.meta.json` を生成するテストを作る（D2）。ghostty タグで、フラグを付けないときは、コミット済みの `screen.txt` が今の出力と同じであることを確かめる。`make screens` で全フィクスチャに生成されることを確認する
 - [x] 3.3 `daemon/internal/server/ws.go` で、`attach` の `binary: true` に応じてバイナリフレームを送る（D3）。宣言した場合・しない場合・attach 中にためた出力の 3 つを、Go のテストで確認する
 - [x] 3.4 `make daemon`、`make daemon-test`、`make screens` を追加し、`make app` が `daemon/` から ghostty タグでビルドしたデーモンを同梱するようにする（D7）。`make app` を実行して、同梱したデーモンが ghostty の画面モデルで動くこと、webtabinal の追跡しているファイルが変わっていないことを確認する
-- [ ] 3.5 同梱したデーモン（バイナリフレーム対応）で Tabghostty を動かし、Phase 5 の 50 MB 計測をもう一度行う。結果を `docs/performance.md` に追記する（要手動確認）
+- [x] 3.5 同梱したデーモン（バイナリフレーム対応）で Tabghostty を動かし、Phase 5 の 50 MB 計測をもう一度行う。結果を `docs/performance.md` に追記する（要手動確認）
 
 ## 4. Tabghostty 側: エンジンの一致検証（spec: engine-parity）
 

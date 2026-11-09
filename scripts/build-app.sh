@@ -5,6 +5,7 @@
 #   WEBTABINAL_DIR=/path/to/webtabinal make app     Web 版の画面をビルドする webtabinal のチェックアウトを指定する
 #   WEBTABINAL_DAEMON=/path/to/webtabinal make app  ビルド済みのデーモンを同梱する（daemon/ はビルドしない）
 #
+# アプリアイコンは Resources/icon.svg から scripts/generate-icon.swift で作り、Contents/Resources/AppIcon.icns に置く（phase7 design D2）。
 # デーモンは Contents/MacOS/webtabinal-daemon として置く。Info.plist の TabghosttyDaemonRevision に、
 # 同梱したデーモンの出どころ（tabghostty-<コミット>。ビルド済みのバイナリを使ったときは prebuilt）を記録する。
 # webtabinal は Web 版の画面（web/dist。webtabinal では gitignore 済み）のビルドにだけ使い、ソースは変えない。
@@ -17,6 +18,7 @@ BUNDLE_ID="com.tabghostty.app"
 OUTPUT_DIR="$ROOT/build"
 APP="$OUTPUT_DIR/$APP_NAME.app"
 STATIC_DIST="$ROOT/daemon/internal/static/dist"
+ICON_SOURCE="$ROOT/Resources/icon.svg"
 
 die() { echo "build-app: $*" >&2; exit 1; }
 warn() { echo "build-app: 警告: $*" >&2; }
@@ -71,6 +73,9 @@ mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources"
 cp "$BIN_DIR/$APP_NAME" "$STAGED_APP/Contents/MacOS/$APP_NAME"
 cp "$DAEMON" "$STAGED_APP/Contents/MacOS/webtabinal-daemon"
 chmod 755 "$STAGED_APP/Contents/MacOS/$APP_NAME" "$STAGED_APP/Contents/MacOS/webtabinal-daemon"
+[[ -f "$ICON_SOURCE" ]] || die "アイコンの元画像が見つかりません: $ICON_SOURCE"
+swift "$ROOT/scripts/generate-icon.swift" "$ICON_SOURCE" "$STAGED_APP/Contents/Resources/AppIcon.icns" >/dev/null \
+  || die "アイコンを作れません: $ICON_SOURCE"
 
 # 4. Info.plist
 cat >"$STAGED_APP/Contents/Info.plist" <<EOF
@@ -82,6 +87,8 @@ cat >"$STAGED_APP/Contents/Info.plist" <<EOF
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>$APP_NAME</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>$BUNDLE_ID</string>
 	<key>CFBundleInfoDictionaryVersion</key>

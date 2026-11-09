@@ -30,11 +30,10 @@ SPEC.md §7 Phase 7 は、デスクトップの入口をネイティブ版に一
   - Web 版との違い（リンクは Cmd+クリックで開く、Cmd+F で検索、Dock バッジ、閉じたタブを未読から取り除く）
   - 既知の制約（複数のクライアントの重複応答、サイズの取り合い、replay の境界、設定の反映のタイミング）
 
-**webtabinal 側**（design.md に変更案を書き、webtabinal で別の change として実施する）:
+**webtabinal 側**: 変更しない（Phase 6 の方針。2026-11-09 に決定。design D4）。
 
-- `desktop/` と、`make desktop` / `desktop-test` を削除する。
-- README のクイックスタート、「デスクトップアプリの更新」、「画像プロトコル」で、デスクトップの入口として Tabghostty を案内する。ブラウザ版の画像プロトコルの記述（Sixel / IIP 対応）は残す。
-- webtabinal の `openspec/specs/desktop-shell` を REMOVED にする。移行先は Tabghostty とする。
+- webtabinal の `desktop/`、`make desktop`、README、`openspec/specs/desktop-shell` は残る。
+- 利用者は、Tabghostty の README の「WebTabinal.app からの移行」に従って移行し、`/Applications/WebTabinal.app` を自分で削除する。
 
 ## Capabilities
 
@@ -58,10 +57,5 @@ Phase 5 の change を先に archive しておくこと。Phase 6 は任意な�
   - `Resources/icon.svg`
   - About パネル
   - `README.md`
-- **webtabinal**
-  - `desktop/` の削除
-  - `Makefile`
-  - `README.md`
-  - `openspec/specs/desktop-shell`（REMOVED）
-  - これらは webtabinal 側の change で扱う。
+- **webtabinal**: 変更しない（design D4）。
 - 利用者への影響: WebTabinal.app を使っていた人は、Tabghostty.app に移ることになる。バンドル ID が変わるので、通知の許可を取り直す必要がある。config、セッション、ブラウザ版はそのまま使える。

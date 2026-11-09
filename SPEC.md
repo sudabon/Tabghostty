@@ -5,6 +5,8 @@
 - 想定読者: 実装者本人、または Claude Code などのコーディングエージェント
 - 作成日: 2026-11-08
 
+> **Tabghostty での読み替え（2026-11-09 追記）**: この指示書は `webtabinal/native/` を前提に書かれている。Tabghostty では、リポジトリ直下に読み替え、デーモンは webtabinal に残す構成で実装した。ただし、Phase 6 で方針を変え、webtabinal のデーモンを `daemon/` に取り込み、そこからビルドしたものをアプリに同梱している（webtabinal のリポジトリは変更しない。取り込み元は `daemon/UPSTREAM.md`）。
+
 ---
 
 ## 0. この指示書のゴール

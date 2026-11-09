@@ -74,6 +74,42 @@ import TerminalUI
     }
 }
 
+/// spec: app-shell「Version information in About」— About パネルにバージョンと同梱のデーモンを出す。
+@MainActor
+@Suite struct AboutPanelTests {
+    // About は AppDelegate に送り、接続する前でも押せる。
+    @Test func appMenuShowsTheAboutPanelThroughTheDelegate() throws {
+        let menu = AppMenu.make()
+        let app = try #require(menu.items.first?.submenu)
+        let about = try #require(app.items.first)
+        #expect(about.title == "About \(WindowTitle.appName)")
+        #expect(about.action == #selector(AppMenuActions.showAboutPanel(_:)))
+        #expect(about.target == nil)
+        #expect(AppDelegate().validateMenuItem(about))
+    }
+
+    @Test func optionsCarryTheVersionAndTheBundledDaemonRevision() throws {
+        let options = AboutPanel.options(info: [
+            "CFBundleShortVersionString": "0.7.0",
+            "CFBundleVersion": "42",
+            "TabghosttyDaemonRevision": "tabghostty-477813d-dirty",
+        ])
+        #expect(options[.applicationVersion] as? String == "0.7.0")
+        let credits = try #require(options[.credits] as? NSAttributedString)
+        #expect(credits.string == "Bundled daemon: tabghostty-477813d-dirty")
+    }
+
+    // `swift run`（Info.plist が無い）や、記録の無い古いバンドル: バージョンは AppKit の既定に任せ、デーモンは none。
+    @Test func missingValuesFallBackWithoutAnEmptyVersion() throws {
+        for info: [String: Any] in [[:], ["CFBundleShortVersionString": "", "TabghosttyDaemonRevision": ""]] {
+            let options = AboutPanel.options(info: info)
+            #expect(options[.applicationVersion] == nil)
+            let credits = try #require(options[.credits] as? NSAttributedString)
+            #expect(credits.string == "Bundled daemon: none")
+        }
+    }
+}
+
 /// spec: terminal-search「Find bar」「Match navigation」— Edit メニューの検索。
 @MainActor
 @Suite struct FindMenuTests {
