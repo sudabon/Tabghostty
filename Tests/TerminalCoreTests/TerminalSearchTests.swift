@@ -131,6 +131,40 @@ import Testing
         #expect(received.withLock { $0 }.last == SearchStatus(query: "found", total: 3, current: 0))
     }
 
+    // 検索し直しても、一致を受け取るバッファは一致の数に見合った大きさのまま（呼ぶたびに倍にしない）。
+    @Test func repeatedSearchesDoNotGrowTheMatchBuffer() throws {
+        let terminal = try VTTerminal(cols: 40, rows: 5, maxScrollback: 1000)
+        terminal.write(lines(30) { "hit \($0)" })
+        for _ in 0..<10 {
+            #expect(try terminal.search("hit").count == 30)
+        }
+        let capacity = try #require(terminal.searcher?.bufferCapacity)
+        #expect(capacity >= 30)
+        #expect(capacity <= 60)
+    }
+
+    // 検索中にグリッドを狭めても、狭めたグリッドの外を指す強調を作らない（以前はスナップショットで trap した）。
+    @Test func narrowingTheGridWhileSearchingKeepsHighlightsInsideTheGrid() async throws {
+        let controller = try TerminalController(sid: "s1", cols: 120, rows: 5, maxScrollback: 1000, colors: nil, sink: RecordingSink())
+        await controller.setViewGrid(.init(cols: 120, rows: 5, cellWidthPx: 16, cellHeightPx: 34))
+        await controller.attach()
+        // 一致はいちばん下の行の 100 列目（狭めて折り返しても、viewport の中に残る）。
+        await controller.receiveReplay(bytes("one\r\ntwo\r\n" + String(repeating: " ", count: 100) + "foo"), done: true)
+        #expect(await controller.search("foo").total == 1)
+        #expect(await controller.currentSearchMatch?.startColumn == 100)
+
+        await controller.setViewGrid(.init(cols: 80, rows: 5, cellWidthPx: 16, cellHeightPx: 34))
+        let snapshot = try #require(await controller.makeSnapshot(forceFull: true))
+        #expect(snapshot.cols == 80)
+        for highlight in snapshot.searchHighlights.values.flatMap({ $0 }) {
+            #expect(highlight.columns.upperBound < 80)
+        }
+        // 一致はリサイズの後の位置で取り直している。
+        if let match = await controller.currentSearchMatch {
+            #expect(match.startColumn < 80)
+        }
+    }
+
     @Test func endingTheSearchClearsTheHighlights() async throws {
         let controller = try await controller(bytes("abc abc"))
         #expect(await controller.search("abc").total == 2)

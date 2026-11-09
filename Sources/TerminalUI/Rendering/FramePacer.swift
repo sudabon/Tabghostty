@@ -16,8 +16,12 @@ struct FramePacer {
     }
 
     /// 変化が起きた。止めていたなら再開するので true を返す。
-    mutating func activity(at now: ContinuousClock.Instant = .now) -> Bool {
-        lastActivity = now
+    /// - Parameter countsAsActivity: false なら、1 フレーム描くために再開するが、止めるまでの時計は戻さない
+    ///   （カーソルの点滅。点滅は `idleTimeout` より短い間隔で続くので、数えると止まらなくなる）
+    mutating func activity(at now: ContinuousClock.Instant = .now, countsAsActivity: Bool = true) -> Bool {
+        if countsAsActivity {
+            lastActivity = now
+        }
         guard isPaused, isVisible else { return false }
         isPaused = false
         return true

@@ -16,6 +16,10 @@ check-deps:
 	@test -d $(VENDOR_XCFRAMEWORK) || { \
 		echo "libghostty-vt が見つかりません（$(VENDOR_XCFRAMEWORK)）。先に \`make deps\` を実行してください。" >&2; \
 		exit 1; }
+	@. scripts/libghostty.lock; \
+		[ "$$(cat $(VENDOR_XCFRAMEWORK)/.tabghostty-verified 2>/dev/null)" = "$$LIBGHOSTTY_VERSION $$LIBGHOSTTY_SHA256" ] || { \
+		echo "Vendor/ の libghostty-vt が scripts/libghostty.lock（$${LIBGHOSTTY_VERSION}）と一致しません。先に \`make deps\` を実行してください。" >&2; \
+		exit 1; }
 
 ## daemon/tests/fixtures/agents（screen.txt を含む）を Tests/Fixtures/ に取り込む（FIXTURES_SOURCE_DIR、既定は daemon）
 fixtures:
@@ -43,7 +47,11 @@ install: app
 
 # 同梱するデーモン（daemon/。phase6 design D7）は、Vendor/ の libghostty-vt に cgo でリンクする。
 # pkg-config の代わりに daemon/scripts/pkg-config を使う（pkg-config も Zig も要らない）。
-DAEMON_GO_ENV := PKG_CONFIG=$(CURDIR)/daemon/scripts/pkg-config CGO_ENABLED=1
+# Go のビルドキャッシュは、cgo のヘッダーやライブラリ（Vendor/ の libghostty-vt）の変化に気づかない。
+# 検証済みの libghostty-vt の SHA-256 を CGO_CFLAGS に入れて、キャッシュのキーに含める（版を上げたら cgo の部分を作り直す）。
+LIBGHOSTTY_VERIFIED := $(shell cat $(VENDOR_XCFRAMEWORK)/.tabghostty-verified 2>/dev/null | awk '{print $$2}')
+DAEMON_GO_ENV := PKG_CONFIG=$(CURDIR)/daemon/scripts/pkg-config CGO_ENABLED=1 \
+	CGO_CFLAGS="-g -O2 -DTABGHOSTTY_LIBGHOSTTY_SHA256=$(LIBGHOSTTY_VERIFIED)"
 
 ## 同梱するデーモンを daemon/ から ghostty タグでビルドする（daemon/bin/webtabinal）
 daemon: check-deps

@@ -293,6 +293,12 @@ public struct ConfigPatch: Equatable, Sendable, Encodable {
     public var state: State?
     public var restore: Restore?
 
+    /// 手元の値から作ったオブジェクト・配列の全体で置き換える項目（`key_bindings`、`notification.commands`）を含むか。
+    /// 手元の値が古いと、ほかのクライアント（ブラウザ版）での変更を上書きしてしまう。
+    public var replacesWholeValues: Bool {
+        keyBindings != nil || notification?.commands != nil
+    }
+
     public init(
         colorScheme: ColorSchemeSetting? = nil,
         shell: String? = nil,

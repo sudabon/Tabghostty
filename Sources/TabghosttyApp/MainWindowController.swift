@@ -14,6 +14,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let container = NSView()
     private let toast = ToastView()
+    private let connectionBanner = ConnectionLostBannerView()
     private let chordIndicator = ChordIndicatorView()
     private var content: NSView?
     private(set) var shell: TabShellController?
@@ -42,7 +43,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         container.addSubview(toast)
         chordIndicator.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(chordIndicator)
+        connectionBanner.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(connectionBanner)
         NSLayoutConstraint.activate([
+            // 接続が切れたときの帯は、ウィンドウの上中央。
+            connectionBanner.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            connectionBanner.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            connectionBanner.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -32),
             toast.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             toast.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
             toast.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -32),
@@ -62,6 +69,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func showConnecting() {
         shell = nil
         failureView = nil
+        hideConnectionLost()
         showChordIndicator(nil)
         setContent(ConnectingView())
         window?.title = WindowTitle.appName
@@ -69,6 +77,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func showStartupFailure(_ message: String, retry: @escaping () -> Void) {
         shell = nil
+        hideConnectionLost()
         showChordIndicator(nil)
         let view = StartupFailureView()
         view.message = message
@@ -108,6 +117,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     func showToast(_ message: String) {
         toast.show(message)
     }
+
+    /// デーモンとの接続が切れていることを出す。`daemonStopped` なら、デーモンを起動するボタンも出す。
+    func showConnectionLost(daemonStopped: Bool, onStartDaemon: @escaping () -> Void) {
+        connectionBanner.onStartDaemon = onStartDaemon
+        connectionBanner.show(daemonStopped: daemonStopped)
+    }
+
+    func hideConnectionLost() {
+        connectionBanner.onStartDaemon = nil
+        connectionBanner.hide()
+    }
+
+    /// 接続が切れたときの帯（テスト用）。
+    var connectionLostBanner: ConnectionLostBannerView { connectionBanner }
 
     func updateTitle(cwd: String?) {
         window?.title = WindowTitle.make(cwd: cwd)

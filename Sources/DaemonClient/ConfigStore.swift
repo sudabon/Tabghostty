@@ -120,6 +120,8 @@ public final class ConfigStore {
     private var lastFinishedEdit: [ConfigKey: Int] = [:]
     private var reloadGeneration = 0
     private static let log = Logger(subsystem: "com.tabghostty.app", category: "config")
+    /// 最後の読み直しが失敗した理由。読めたら nil。失敗している間は、手元の値が古いかもしれない。
+    public private(set) var reloadError: String?
 
     public init(settings: ClientSettings, api: any ConfigAPI) {
         self.settings = settings
@@ -150,10 +152,15 @@ public final class ConfigStore {
             fetched = try await api.fetchSettings()
         } catch {
             Self.log.error("Failed to reload the configuration: \(error.localizedDescription, privacy: .public)")
+            // 新しい読み直しを始めていれば、そちらの結果に任せる。
+            if generation == reloadGeneration {
+                reloadError = ConfigEditor.message(for: error)
+            }
             return false
         }
         // 新しい読み直しを始めていれば、そちらの結果に任せる。
         guard generation == reloadGeneration else { return true }
+        reloadError = nil
         var nextCommitted = committed
         var nextSettings = settings
         for key in ConfigKey.allCases {
@@ -199,6 +206,19 @@ public final class ConfigStore {
     }
 }
 
+/// 設定を保存しなかった理由。
+public enum ConfigEditError: Error, Equatable, LocalizedError {
+    /// 最新の設定を読み込めていないので、全体で置き換える変更を送らなかった。
+    case settingsMayBeStale
+
+    public var errorDescription: String? {
+        switch self {
+        case .settingsMayBeStale:
+            return "The latest settings could not be loaded from the daemon, so this change was not saved (it could overwrite changes made elsewhere). Try again."
+        }
+    }
+}
+
 /// 設定の変更（phase4 design D3）。楽観的に表示を変え、変更したキーだけを入れた `PATCH /api/config` を送り、
 /// 失敗したら保存済みの値に戻してエラーを投げる。
 ///
@@ -224,9 +244,16 @@ public final class ConfigEditor {
     }
 
     /// 変更を保存する。失敗したら、表示を戻してから投げる。
+    ///
+    /// 最後の読み直しが失敗していて、手元の値から作った全体で置き換える変更（`key_bindings`、`notification.commands`）なら、
+    /// ブラウザ版での変更を上書きしないよう送らずに `ConfigEditError.settingsMayBeStale` を投げ、読み直しを始める。
     public func apply(_ patch: ConfigPatch) async throws {
         let keys = patch.keys
         guard !keys.isEmpty else { return }
+        if patch.replacesWholeValues, store.reloadError != nil {
+            Task { await store.reload() }
+            throw ConfigEditError.settingsMayBeStale
+        }
         requestCounter += 1
         let request = requestCounter
         for key in keys {

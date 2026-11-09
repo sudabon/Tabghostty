@@ -49,6 +49,27 @@ import TerminalCore
         #expect(r12)
     }
 
+    // カーソルの点滅は、描くために再開するが、止めるまでの時計は戻さない（点滅が続いても、合間は止まる）。
+    @Test func blinkWakesForAFrameWithoutKeepingTheLinkRunning() {
+        var pacer = FramePacer(now: start)
+        let paused = pacer.tick(at: start + .seconds(2), busy: false)
+        #expect(paused)
+        // 点滅で再開する。
+        let resumed = pacer.activity(at: start + .milliseconds(2530), countsAsActivity: false)
+        #expect(resumed)
+        #expect(!pacer.isPaused)
+        // 点滅のフレームを描いたら、描くものが無いので、すぐに止める。
+        let pausedAgain = pacer.tick(at: start + .milliseconds(2546), busy: false)
+        #expect(pausedAgain)
+        // 動いている間の点滅は、止めるまでの時間を延ばさない。
+        let r1 = pacer.activity(at: start + .seconds(3))
+        #expect(r1)
+        let r2 = pacer.activity(at: start + .milliseconds(3530), countsAsActivity: false)
+        #expect(!r2)
+        let r3 = pacer.tick(at: start + .milliseconds(4001), busy: false)
+        #expect(r3)
+    }
+
     // Scenario: Hidden window — 見えていない間は、変化があっても止めたまま（点滅のフレームも描かない）。
     @Test func hiddenWindowStaysPausedUntilVisible() {
         var pacer = FramePacer(now: start)

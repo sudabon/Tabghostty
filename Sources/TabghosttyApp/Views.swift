@@ -159,3 +159,87 @@ final class ToastView: NSVisualEffectView {
         isHidden = true
     }
 }
+
+/// デーモンとの接続が切れている間、ウィンドウの上に出す帯。切れている間はキー入力が端末に届かないことを知らせる。
+/// デーモンが止まっていると分かったら、起動するボタンを出す（勝手には起動しない。利用者が別のデーモンに
+/// 切り替えている途中かもしれないため）。
+@MainActor
+final class ConnectionLostBannerView: NSVisualEffectView {
+    private let label = NSTextField(labelWithString: "")
+    private let startButton = NSButton(title: "Start Daemon", target: nil, action: nil)
+    private let spinner = NSProgressIndicator()
+    var onStartDaemon: (() -> Void)?
+
+    init() {
+        super.init(frame: .zero)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.masksToBounds = true
+        isHidden = true
+
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize + 1)
+        label.textColor = .labelColor
+        label.lineBreakMode = .byTruncatingTail
+        startButton.target = self
+        startButton.action = #selector(startDaemon)
+        startButton.bezelStyle = .rounded
+        startButton.controlSize = .small
+
+        let stack = NSStackView(views: [spinner, label, startButton])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    /// 出す。`daemonStopped` なら、デーモンが待ち受けていないことと、起動するボタンを出す。
+    func show(daemonStopped: Bool) {
+        if daemonStopped {
+            label.stringValue = "The webtabinal daemon is not running. Typing does not reach the terminal."
+            spinner.stopAnimation(nil)
+            spinner.isHidden = true
+            startButton.isHidden = false
+            startButton.isEnabled = true
+        } else {
+            label.stringValue = "Disconnected from the webtabinal daemon. Reconnecting…"
+            spinner.isHidden = false
+            spinner.startAnimation(nil)
+            startButton.isHidden = true
+        }
+        isHidden = false
+    }
+
+    func hide() {
+        spinner.stopAnimation(nil)
+        isHidden = true
+    }
+
+    /// 表示している文言（テスト用）。
+    var message: String { isHidden ? "" : label.stringValue }
+
+    /// 起動するボタンを出しているか（テスト用）。
+    var showsStartButton: Bool { !isHidden && !startButton.isHidden }
+
+    @objc private func startDaemon() {
+        startButton.isEnabled = false
+        onStartDaemon?()
+    }
+}

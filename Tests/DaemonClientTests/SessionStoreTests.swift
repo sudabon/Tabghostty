@@ -20,6 +20,17 @@ import Testing
     }
 
     // Scenario: Initial sync / Unknown fields
+    // 読めないセッションが 1 つあっても、ほかのセッションの一覧は反映する（一覧の更新全体は捨てない）。
+    @Test func aMalformedSessionIsSkippedNotTheWholeList() throws {
+        let json = #"{"t":"sessions","list":[{"id":"a","state":"idle"},{"state":"idle"},{"id":"c","order":"oops"},{"id":"d","future_field":1}]}"#
+        let frame = try #require(ServerFrame.decode(Data(json.utf8)))
+        guard case .sessions(let list) = frame else {
+            Issue.record("expected a sessions frame: \(frame)")
+            return
+        }
+        #expect(list.map(\.id) == ["a", "d"])
+    }
+
     @Test func framesAreAppliedInOrder() {
         let store = SessionStore()
         var changes = 0

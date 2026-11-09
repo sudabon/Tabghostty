@@ -77,8 +77,10 @@ public enum WebTabinalProbeResult: Equatable, Sendable {
     case daemon
     /// 何も待ち受けていない（接続できない）。
     case notListening
-    /// 何かが待ち受けているが、デーモンの応答ではない。
+    /// 何かが待ち受けているが、デーモンの応答ではない（応答を読み切ったうえで、シグネチャが合わない）。
     case foreign
+    /// 何かが待ち受けているが、時間内に応答を読み切れなかった（忙しいデーモンかもしれないので、別のプロセスとは決めない）。
+    case unverified
 }
 
 public func webTabinalListening(port: Int) -> Bool {
@@ -139,16 +141,41 @@ public func probeWebTabinal(port: Int) -> WebTabinalProbeResult {
         }
         return true
     }
-    guard sentAll else { return .foreign }
+    // 送れなかった（タイムアウトなど）なら、相手がデーモンかどうかは分からない。
+    guard sentAll else { return .unverified }
 
+    let limit = 8 * 1024
     var response = Data()
     var buffer = [UInt8](repeating: 0, count: 1024)
-    while response.count < 8 * 1024 {
-        let count = Darwin.recv(fd, &buffer, min(buffer.count, 8 * 1024 - response.count), 0)
-        if count <= 0 { break }
+    var closed = false
+    while response.count < limit {
+        let count = Darwin.recv(fd, &buffer, min(buffer.count, limit - response.count), 0)
+        if count == 0 {
+            closed = true
+            break
+        }
+        // 負ならタイムアウトかエラー（読み切れていない）。
+        if count < 0 { break }
         response.append(contentsOf: buffer.prefix(Int(count)))
     }
-    return isWebTabinalProbeResponse(response) ? .daemon : .foreign
+    if isWebTabinalProbeResponse(response) { return .daemon }
+    // 応答を最後まで読んだか、ヘッダーまで読めて 401 でなければ、デーモンではない。
+    if closed || response.count >= limit { return .foreign }
+    if let status = probeStatusCode(response), status != 401 { return .foreign }
+    // 応答が途中まで（または何も）届かなかった。デーモンが忙しいだけかもしれない。
+    return .unverified
+}
+
+/// 応答のヘッダーを読み切っていれば、ステータスコード。
+private func probeStatusCode(_ data: Data) -> Int? {
+    guard let response = String(data: data, encoding: .utf8),
+          let separator = response.range(of: "\r\n\r\n") else {
+        return nil
+    }
+    let statusLine = response[..<separator.lowerBound].components(separatedBy: "\r\n").first ?? ""
+    let parts = statusLine.split(separator: " ", maxSplits: 2)
+    guard parts.count >= 2 else { return nil }
+    return Int(parts[1])
 }
 
 private struct DetachedProcessError: LocalizedError {

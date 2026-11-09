@@ -102,9 +102,13 @@ extension TerminalView: @preconcurrency NSTextInputClient {
         unmarkText()
     }
 
-    /// 変換中のキーを IME が処理しなかったときに AppKit が呼ぶ。キーは keyDown の側で送るので、ここでは何もしない
-    /// （何もしないと既定の動作でビープが鳴る）。
-    public override func doCommand(by selector: Selector) {}
+    /// IME やキーの割り当てが、キーをコマンドとして返したときに AppKit が呼ぶ。キーは keyDown の側で送るので、ここでは送らない
+    /// （何もしないと既定の動作でビープが鳴る）。変換中のキーなら、返されたことだけを記録する（keyDown が確定の後に送る）。
+    public override func doCommand(by selector: Selector) {
+        if isInterpretingForInputMethod {
+            inputMethodPassedCommand = true
+        }
+    }
 
     // MARK: - 状態
 

@@ -183,8 +183,8 @@ final class MetalRenderer: TerminalRenderer {
             return false
         }
         frameNeeded = false
-        encodeFrame(into: drawable.texture, present: drawable)
-        return true
+        // GPU が追いついていなくて描けなかったなら、`encodeFrame` が `frameNeeded` を戻す（次の tick で描く）。
+        return encodeFrame(into: drawable.texture, present: drawable) != nil
     }
 
     // MARK: - オフスクリーン（テスト・比較用）
@@ -463,7 +463,13 @@ final class MetalRenderer: TerminalRenderer {
         let overlay = buildOverlay(view)
         syncAtlasTextures()
 
-        _ = inFlight.wait(timeout: .now() + .milliseconds(100))
+        // インスタンスのバッファは 3 つを順に使い回すので、GPU が 3 フレーム分を使い終えるまでは書き込めない。
+        // 待っても空かなければ、このフレームは描かずに次の tick に回す（GPU が読んでいるバッファを上書きしない。
+        // 待てなかったのに完了で signal すると、上限が増えたままになる）。
+        guard inFlight.wait(timeout: .now() + .milliseconds(100)) == .success else {
+            frameNeeded = true
+            return nil
+        }
         guard let commandBuffer = context.queue.makeCommandBuffer() else {
             inFlight.signal()
             return nil

@@ -128,6 +128,10 @@ public final class TerminalView: NSView {
     var insertedTexts: [String]?
     /// `.interpret` のキーを渡している間に、未確定の文字列が変わった。
     var markedTextChangedDuringInterpret = false
+    /// 変換中のキーを IME に渡している最中。
+    var isInterpretingForInputMethod = false
+    /// 変換中のキーを IME に渡している間に、IME がキーをコマンドとして返した（`doCommand(by:)`）。
+    var inputMethodPassedCommand = false
     /// 未確定の文字列が、別のタブから戻したもの（IME はこの文字列を知らない）。
     var isRestoredComposition = false
     /// コードの判定で使ったキー（離したことも端末に送らない）。
@@ -153,10 +157,14 @@ public final class TerminalView: NSView {
 
     private var blinkTimer: Timer?
     private(set) var blinkVisible = true
+    /// 点滅の切り替えで再描画を頼んでいる最中（`wakeDisplayLink` がアイドルの時計を進めないように）。
+    private var isBlinkInvalidation = false
     private var resizeTask: Task<Void, Never>?
     private var windowObservers: [NSObjectProtocol] = []
 
     private var contrastCache: [ColorPair: ColorRGB] = [:]
+    /// コントラストのキャッシュの数（テスト用）。
+    var contrastCacheCount: Int { contrastCache.count }
 
     /// カーソルの点滅間隔（SPEC: 約 530 ms）。
     static let blinkInterval: TimeInterval = 0.53
@@ -326,7 +334,16 @@ public final class TerminalView: NSView {
             return
         case .inputMethod:
             // 変換中のキーは IME のもの。確定した文字列だけが insertText で届く。
+            isInterpretingForInputMethod = true
+            inputMethodPassedCommand = false
             interpretKeyEvents([event])
+            isInterpretingForInputMethod = false
+            // IME が確定してから、そのキーをコマンドとして返した（韓国語の入力の Return や矢印、Option-E の後の Return など）。
+            // 変換が終わっていれば、確定した文字列（insertText で送った）の後に、そのキーを送る。
+            if inputMethodPassedCommand, !hasMarkedText(), let input = KeyInput(event: event) {
+                latencyProbe?.keyDown()
+                controller?.enqueueKey(input)
+            }
         case .send(let text):
             latencyProbe?.keyDown()
             controller?.enqueueText(text)
@@ -484,7 +501,8 @@ public final class TerminalView: NSView {
 
     /// 描くものができた。止めていた display link を再開する（ウィンドウが見えていなければ止めたまま）。
     func wakeDisplayLink() {
-        if pacer.activity() {
+        // 点滅だけの変化は、描くために再開するが、アイドルの時計は進めない（点滅の合間は止めておく。phase5 design D3）。
+        if pacer.activity(countsAsActivity: !isBlinkInvalidation) {
             displayLink?.isPaused = false
         }
     }
@@ -718,9 +736,16 @@ public final class TerminalView: NSView {
         let key = ColorPair(foreground: foreground, background: background)
         if let cached = contrastCache[key] { return cached }
         let adjusted = ContrastAdjuster.adjust(foreground: foreground, background: background)
+        // truecolor の動画などでは組み合わせが際限なく増えるので、上限を超えたら捨てて作り直す。
+        if contrastCache.count >= Self.colorCacheLimit {
+            contrastCache.removeAll(keepingCapacity: true)
+        }
         contrastCache[key] = adjusted
         return adjusted
     }
+
+    /// 色のキャッシュ（コントラストの調整、Core Text の CGColor）に置く数の上限。
+    static let colorCacheLimit = 4096
 
     /// カーソルを描くセル（2 セル幅の文字の 2 セル目にいれば 1 セル目）と幅。描かないときは nil。
     ///
@@ -737,8 +762,9 @@ public final class TerminalView: NSView {
     /// - Parameter isFirstResponder: first responder が変わる途中なら、その結果。nil なら今の状態を読む
     private func focusDidChange(isFirstResponder: Bool? = nil) {
         if let cursor { renderer.invalidate(cursorRect(cursor)) }
-        restartBlink()
         let focused = window?.isKeyWindow == true && (isFirstResponder ?? (window?.firstResponder === self))
+        // first responder が変わる途中は `hasKeyboardFocus` がまだ古いので、変わった後の状態で決める。
+        restartBlink(focused: focused)
         if focused {
             onFocus?()
         }
@@ -750,10 +776,11 @@ public final class TerminalView: NSView {
     }
 
     /// 点滅を表示の状態からやり直す（キー入力やカーソルの移動のあと）。
-    func restartBlink() {
+    /// - Parameter focused: キーボードのフォーカスがあるか。nil なら今の状態を読む
+    func restartBlink(focused: Bool? = nil) {
         blinkVisible = true
         // 点滅は点灯と消灯を切り替えるときだけ描く（約 530 ms に 1 回）。ウィンドウが見えていなければ点滅しない。
-        let shouldBlink = pacer.isVisible && hasKeyboardFocus && (cursor?.blinking ?? false) && (cursor?.visible ?? false)
+        let shouldBlink = pacer.isVisible && (focused ?? hasKeyboardFocus) && (cursor?.blinking ?? false) && (cursor?.visible ?? false)
         guard shouldBlink else {
             stopBlinking()
             return
@@ -774,8 +801,11 @@ public final class TerminalView: NSView {
 
     private func toggleBlink() {
         blinkVisible.toggle()
-        // カーソルのセルだけを再描画する。
-        if let cursor { renderer.invalidate(cursorRect(cursor)) }
+        // カーソルのセルだけを再描画する。点滅だけの変化なので、display link のアイドルの時計は進めない。
+        guard let cursor else { return }
+        isBlinkInvalidation = true
+        renderer.invalidate(cursorRect(cursor))
+        isBlinkInvalidation = false
     }
 
     // MARK: - 色

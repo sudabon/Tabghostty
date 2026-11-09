@@ -1,4 +1,5 @@
 import Foundation
+import os
 import TerminalCore
 
 /// セッション 1 つ（デーモンの `session.Info`）。クライアントが知らないフィールドは無視する。
@@ -158,8 +159,33 @@ public enum ServerFrame: Equatable, Sendable {
         let t: String
     }
 
+    /// 読めなかったフレームやセッションを残す（無視はするが、原因を追えるように）。
+    private static let log = Logger(subsystem: "com.tabghostty.app", category: "frames")
+
     private struct SessionsBody: Decodable {
         let list: [SessionInfo]
+
+        private enum CodingKeys: String, CodingKey { case list }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // 読めないセッションは、その 1 つだけを飛ばす（1 つのために一覧の更新全体を捨てない）。
+            list = try c.decode([LossySession].self, forKey: .list).compactMap(\.value)
+        }
+    }
+
+    /// 読めなければ nil にする `SessionInfo`（必ず読めるので、配列の次の要素に進める）。
+    private struct LossySession: Decodable {
+        let value: SessionInfo?
+
+        init(from decoder: Decoder) throws {
+            do {
+                value = try SessionInfo(from: decoder)
+            } catch {
+                ServerFrame.log.error("skipped a session that could not be decoded: \(String(describing: error), privacy: .public)")
+                value = nil
+            }
+        }
     }
 
     private struct DataBody: Decodable {
@@ -209,6 +235,7 @@ public enum ServerFrame: Equatable, Sendable {
             }
         } catch {
             // 形の合わないフレームも、接続は切らずに無視する。
+            log.error("ignored a malformed \(envelope.t, privacy: .public) frame: \(String(describing: error), privacy: .public)")
             return .unknown(type: envelope.t)
         }
     }

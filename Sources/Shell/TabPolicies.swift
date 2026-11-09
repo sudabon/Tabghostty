@@ -17,6 +17,64 @@ public enum MemoText {
         return String(String.UnicodeScalarView(text.unicodeScalars.prefix(max)))
     }
 
+    /// `previous` から `proposed` に変わって上限を超えたとき、新しく入った文字列の後ろから削って収める
+    /// （途中に入力・ペーストしても、もとの末尾の文字は消さない。spec: 31 文字目は受け付けない）。
+    /// - Parameter caret: 変わった後のカーソルの位置（UTF-16）。入力・ペーストした文字列は、カーソルの直前にある。
+    ///   nil なら、変わっていない先頭と末尾から求める
+    /// - Returns: 上限を超えていなければ nil。超えていれば、収めた文字列と、カーソルを置く位置（UTF-16）
+    public static func fit(
+        _ proposed: String, previous: String, caret: Int? = nil, max: Int = maxCodePoints
+    ) -> (text: String, caret: Int)? {
+        let new = Array(proposed.unicodeScalars)
+        guard new.count > max else { return nil }
+        let old = Array(previous.unicodeScalars)
+        // 新しく入った文字列の範囲（new の中の位置）。
+        let inserted: Range<Int>
+        if let caret, let caretIndex = scalarIndex(in: new, utf16Offset: caret),
+           new.count - caretIndex <= old.count,
+           new[caretIndex...].elementsEqual(old[(old.count - (new.count - caretIndex))...]) {
+            // カーソルの後ろは変わっていない。もとの文字列と違うところから、カーソルまでが新しく入った文字列。
+            let unchangedTail = new.count - caretIndex
+            var prefix = 0
+            while prefix < Swift.min(caretIndex, old.count - unchangedTail), old[prefix] == new[prefix] {
+                prefix += 1
+            }
+            inserted = prefix..<caretIndex
+        } else {
+            // 変わっていない先頭と末尾。その間が新しく入った文字列。
+            var prefix = 0
+            while prefix < Swift.min(old.count, new.count), old[prefix] == new[prefix] {
+                prefix += 1
+            }
+            var suffix = 0
+            while suffix < Swift.min(old.count, new.count) - prefix, old[old.count - 1 - suffix] == new[new.count - 1 - suffix] {
+                suffix += 1
+            }
+            inserted = prefix..<(new.count - suffix)
+        }
+        let room = Swift.max(0, max - (new.count - inserted.count))
+        let kept = new[inserted].prefix(room)
+        var result = Array(new[..<inserted.lowerBound]) + Array(kept) + Array(new[inserted.upperBound...])
+        // 入った分を削っても収まらない（もとの文字列が上限を超えていた）なら、末尾を削る。
+        if result.count > max {
+            result = Array(result.prefix(max))
+        }
+        let caretScalars = Swift.min(inserted.lowerBound + kept.count, result.count)
+        let caretUTF16 = result[..<caretScalars].reduce(0) { $0 + $1.utf16.count }
+        return (String(String.UnicodeScalarView(result)), caretUTF16)
+    }
+
+    /// UTF-16 の位置にある code point の番号（code point の途中なら nil）。
+    private static func scalarIndex(in scalars: [Unicode.Scalar], utf16Offset: Int) -> Int? {
+        var offset = 0
+        for (index, scalar) in scalars.enumerated() {
+            if offset == utf16Offset { return index }
+            if offset > utf16Offset { return nil }
+            offset += scalar.utf16.count
+        }
+        return offset == utf16Offset ? scalars.count : nil
+    }
+
     /// 残りの文字数（「残り N」）。
     public static func remaining(_ text: String) -> Int {
         Swift.max(0, maxCodePoints - length(text))

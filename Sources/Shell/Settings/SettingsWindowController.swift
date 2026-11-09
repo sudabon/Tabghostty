@@ -93,6 +93,18 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         Task { await pane.refreshPermission() }
     }
 
+    /// 最新の設定を読み込めなかったことを知らせる（開いたときの読み直しが失敗した）。
+    /// 表示している値は古いかもしれない。キー割り当てと通知のコマンドは、読み込めるまで保存しない（`ConfigEditor`）。
+    public func showReloadFailure(_ message: String) {
+        guard let window, window.isVisible, window.attachedSheet == nil else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "最新の設定を読み込めませんでした"
+        alert.informativeText = "表示している値は古いかもしれません。キー割り当てと通知するコマンドは、読み込めるまで保存しません。\n\n\(message)"
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
+    }
+
     /// 配色に外観を合わせる。
     public func applyTheme(_ theme: ResolvedTheme) {
         window?.appearance = theme.appearance

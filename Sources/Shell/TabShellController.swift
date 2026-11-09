@@ -36,6 +36,8 @@ public final class TabShellController {
 
     private let dockBadge: DockBadge
     private var previousSessionCount: Int?
+    /// 接続が切れたときの一覧の世代。再接続して新しい一覧が届くまで（届いたその一覧も）、タブの数の変化で終了しない。
+    private var listGenerationAtDisconnect: Int?
     private var memoEditor: MemoEditorSheet?
     private var windowObservers: [NSObjectProtocol] = []
     private var didReportSessionsReady = false
@@ -129,7 +131,8 @@ public final class TabShellController {
         terminalView.keyChordHandler = { [weak self] stroke in
             self?.chord.handle(stroke) ?? false
         }
-        if imageAttach != nil {
+        if let imageAttach {
+            imageAttach.onFailure = { [weak self] message in self?.onTransientMessage?(message) }
             terminalView.imageAttachHandler = { [weak self] images in
                 guard let self, let imageAttach = self.imageAttach else { return }
                 Task { await imageAttach.attach(images) }
@@ -245,10 +248,30 @@ public final class TabShellController {
         dockBadge.update(count: unread.count)
     }
 
+    /// デーモンとの接続が切れた / つながった。
+    public func connectionDidChange(connected: Bool) {
+        if !connected, listGenerationAtDisconnect == nil {
+            listGenerationAtDisconnect = coordinator.store.listGeneration
+        }
+    }
+
     private func applyLastTabPolicy() {
         let store = coordinator.store
         guard store.hasReceivedSessions else { return }
         let count = store.sessions.count
+        if let generation = listGenerationAtDisconnect {
+            // 再接続した後の最初の一覧が届くまでは、何もしない。
+            guard store.listGeneration != generation else { return }
+            listGenerationAtDisconnect = nil
+            // 再接続した後の最初の一覧は、利用者がタブを閉じた結果ではない（デーモンが起動し直して、
+            // セッションが無くなっていることもある）。終了はせず、空なら「すべてのタブを閉じました」を出す。
+            terminalArea.isEmptyStateVisible = count == 0
+            if count == 0, let previousSessionCount, previousSessionCount > 0 {
+                onTransientMessage?("Reconnected to the daemon, but its previous sessions are gone (the daemon was restarted).")
+            }
+            previousSessionCount = count
+            return
+        }
         switch TabPolicy.lastTabOutcome(previousCount: previousSessionCount, currentCount: count, quitWhenNoTabs: settings.quitWhenNoTabs) {
         case .quit:
             onQuitRequested?()

@@ -46,6 +46,26 @@ import TerminalUI
         #expect(try await typed(harness) == "/tmp/ok.png ")
     }
 
+    // 添付できなかった画像があれば、黙って捨てずに知らせる。
+    @Test func failedUploadsAreReported() async throws {
+        let uploader = FakeImageUploader(results: [nil, "/tmp/ok.png"])
+        let harness = try ShellHarness(uploader: uploader)
+        var messages: [String] = []
+        harness.shell.onTransientMessage = { messages.append($0) }
+        await harness.liveSessions([session("a")])
+        #expect(await harness.shell.imageAttach?.attach([png, jpeg]) == "/tmp/ok.png ")
+        #expect(messages.count == 1)
+        #expect(messages.first?.hasPrefix("1 of 2 images could not be attached") == true)
+
+        messages.removeAll()
+        let single = FakeImageUploader(results: [nil])
+        let other = try ShellHarness(uploader: single)
+        other.shell.onTransientMessage = { messages.append($0) }
+        await other.liveSessions([session("a")])
+        #expect(await other.shell.imageAttach?.attach([png]) == nil)
+        #expect(messages.first?.hasPrefix("The image could not be attached") == true)
+    }
+
     // すべて失敗したら、何も入力しない。
     @Test func nothingIsTypedWhenEveryUploadFails() async throws {
         let uploader = FakeImageUploader(results: [nil])

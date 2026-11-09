@@ -411,6 +411,10 @@ final class CoreTextRenderer: TerminalRenderer {
         let value = CGColor(
             srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: alpha
         )
+        // truecolor の動画などでは色が際限なく増えるので、上限を超えたら捨てて作り直す。
+        if colorCache.count >= TerminalView.colorCacheLimit {
+            colorCache.removeAll(keepingCapacity: true)
+        }
         colorCache[key] = value
         return value
     }

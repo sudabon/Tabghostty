@@ -52,6 +52,35 @@ import Testing
         #expect(store.settings.display.colorScheme == .light)
     }
 
+    // 最後の読み直しが失敗していたら、手元の値から作った全体（key_bindings、notification.commands）では上書きしない。
+    // ほかの項目は送る。読み直せたら、また送れる。
+    @Test func wholeValuePatchesAreRefusedWhileTheSettingsMayBeStale() async throws {
+        let api = FakeConfigAPI()
+        let store = ConfigStore(settings: ClientSettings(), api: api)
+        let editor = ConfigEditor(store: store, api: api)
+        api.fetchFails = true
+        #expect(await store.reload() == false)
+        #expect(store.reloadError == "fetch failed")
+
+        await #expect(throws: ConfigEditError.settingsMayBeStale) {
+            try await editor.apply(ConfigPatch(notification: .init(commands: ["make"])))
+        }
+        var bindings = KeyBindings()
+        bindings.enabled = true
+        await #expect(throws: ConfigEditError.settingsMayBeStale) {
+            try await editor.apply(ConfigPatch(keyBindings: bindings))
+        }
+        #expect(api.patches.isEmpty)
+        try await editor.apply(ConfigPatch(colorScheme: .light))
+        #expect(api.patches == [ConfigPatch(colorScheme: .light)])
+
+        api.fetchFails = false
+        #expect(await store.reload())
+        #expect(store.reloadError == nil)
+        try await editor.apply(ConfigPatch(notification: .init(commands: ["make"])))
+        #expect(store.settings.tabs.notification.commands == ["make"])
+    }
+
     // 失敗したら元に戻し、デーモンが返した本文をエラーとして投げる。
     @Test func failedPatchRollsBackAndReportsTheDaemonMessage() async throws {
         let server = try MockHTTPServer { _ in

@@ -17,6 +17,8 @@ public final class ImageAttachService {
     private let uploader: any ImageUploadAPI
     private let paste: (String) -> Void
     private static let log = Logger(subsystem: "com.tabghostty.app", category: "image-attach")
+    /// 添付できなかった画像があった・入力しなかったことを知らせる（トーストに出す）。
+    public var onFailure: ((String) -> Void)?
 
     /// - Parameter paste: アクティブなセッションにテキストをペーストする（`TerminalView.pasteText`）
     public init(store: SessionStore, uploader: any ImageUploadAPI, paste: @escaping (String) -> Void) {
@@ -30,17 +32,28 @@ public final class ImageAttachService {
     public func attach(_ images: [AttachableImage]) async -> String? {
         guard let sid = store.activeSessionID, !images.isEmpty else { return nil }
         var paths: [String] = []
+        var failures: [String] = []
         for image in images {
             do {
                 let saved = try await uploader.uploadImage(sessionID: sid, data: image.data, mimeType: image.mimeType)
                 paths.append(saved.path)
             } catch {
                 Self.log.warning("Image attach failed: \(error.localizedDescription, privacy: .public)")
+                failures.append(ConfigEditor.message(for: error))
             }
         }
+        // 失敗した画像は飛ばすが、黙って捨てない（ペーストしても何も起きないように見えるため）。
+        if let reason = failures.first {
+            let count = images.count == 1 ? "The image" : "\(failures.count) of \(images.count) images"
+            onFailure?("\(count) could not be attached: \(reason)")
+        }
         let text = ImageAttach.terminalText(forPaths: paths)
+        guard !text.isEmpty else { return nil }
         // アップロードの間にタブを切り替えたら、パスはそのセッションのものなので入力しない。
-        guard !text.isEmpty, store.activeSessionID == sid else { return nil }
+        guard store.activeSessionID == sid else {
+            onFailure?("The image paths were not typed because the active tab changed during the upload.")
+            return nil
+        }
         paste(text)
         return text
     }

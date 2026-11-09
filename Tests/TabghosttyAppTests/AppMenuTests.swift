@@ -22,6 +22,25 @@ import TerminalUI
         #expect(paste.keyEquivalentModifierMask == .command)
         #expect(paste.target == nil)
     }
+    // テキストフィールド（メモ・設定）で、取り消し・やり直し・カット・すべて選択が使える。
+    @Test func editMenuHasTheStandardTextEditingItems() throws {
+        let menu = AppMenu.make()
+        let edit = try #require(menu.items.compactMap(\.submenu).first { $0.title == "Edit" })
+        let expected: [(title: String, action: Selector, key: String, modifiers: NSEvent.ModifierFlags)] = [
+            ("Undo", Selector(("undo:")), "z", .command),
+            ("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            ("Cut", #selector(NSText.cut(_:)), "x", .command),
+            ("Select All", #selector(NSText.selectAll(_:)), "a", .command),
+        ]
+        for item in expected {
+            let found = try #require(edit.items.first { $0.title == item.title })
+            #expect(found.action == item.action)
+            #expect(found.keyEquivalent == item.key)
+            #expect(found.keyEquivalentModifierMask == item.modifiers)
+            #expect(found.target == nil)
+        }
+    }
+
     // spec: keyboard-shortcuts「Command shortcuts」— Command-N と Command-1〜9 はメニューのキー等価物。
     @Test func fileAndWindowMenusHaveTheTabShortcuts() throws {
         let menu = AppMenu.make()

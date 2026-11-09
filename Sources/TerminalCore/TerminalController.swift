@@ -119,6 +119,9 @@ public actor TerminalController {
     private nonisolated let modesState = OSAllocatedUnfairLock(initialState: TerminalInputModes())
     /// 次のスナップショットを全行にするか。
     private var forceFullSnapshot = true
+    /// 前のスナップショットが失敗した（失敗が続く間は、ログを 1 回だけ出す）。
+    private var snapshotFailing = false
+    private static let log = Logger(subsystem: "com.tabghostty.app", category: "terminal")
     /// ビューが預けた未確定の文字列（ビューからだけ使う。メインスレッドから同期的に読み書きする）。
     private nonisolated let savedComposition = OSAllocatedUnfairLock<ComposingText?>(initialState: nil)
 
@@ -399,6 +402,11 @@ public actor TerminalController {
         // mode 2048 のサイズ報告が出ることがある。リサイズは同期出力の保留も解く。
         routeEffects()
         updateRenderHold()
+        // 一致の行と列はリサイズ前のもの（折り返しも変わる）なので、検索し直す。
+        // 古い一致のまま描くと、狭めたグリッドの外の列を指してしまう。
+        if previous?.cols != grid.cols || previous?.rows != grid.rows {
+            refreshSearchMatches()
+        }
         markRenderPending()
         if phase == .live, previous?.cols != grid.cols || previous?.rows != grid.rows {
             sendViewSize()
@@ -651,7 +659,19 @@ public actor TerminalController {
         guard !held else { return nil }
         let full = forceFull || forceFullSnapshot
         forceFullSnapshot = false
-        guard var snapshot = try? terminal.makeSnapshot(forceFull: full, knownImageGenerations: knownImageGenerations) else { return nil }
+        var snapshot: FrameSnapshot
+        do {
+            snapshot = try terminal.makeSnapshot(forceFull: full, knownImageGenerations: knownImageGenerations)
+        } catch {
+            // 途中で失敗すると dirty の印は消えているかもしれないので、次は全行を取り直す。
+            forceFullSnapshot = true
+            if !snapshotFailing {
+                Self.log.error("snapshot failed (sid=\(self.sid, privacy: .public)): \(String(describing: error), privacy: .public)")
+            }
+            snapshotFailing = true
+            return nil
+        }
+        snapshotFailing = false
         snapshot.searchHighlights = viewportSearchHighlights(cols: snapshot.cols, rows: snapshot.rows)
         return snapshot
     }
@@ -755,6 +775,11 @@ public actor TerminalController {
     private func research() {
         guard researchScheduled else { return }
         researchScheduled = false
+        refreshSearchMatches()
+    }
+
+    /// 今の検索語で一致を取り直す。今の一致が残っていればそのまま、無くなっていれば近い番号にする。viewport は動かさない。
+    private func refreshSearchMatches() {
         guard !searchQuery.isEmpty else { return }
         let previous = currentSearchMatch
         let previousIndex = searchIndex
@@ -795,9 +820,10 @@ public actor TerminalController {
             let isCurrent = index == searchIndex
             for row in max(match.startRow, top)...min(match.endRow, bottom) {
                 let first = row == match.startRow ? match.startColumn : 0
-                let last = row == match.endRow ? match.endColumn : cols - 1
+                let last = min(row == match.endRow ? match.endColumn : cols - 1, cols - 1)
+                // グリッドの外を指す一致（リサイズの直後など）は描かない。
                 guard first <= last else { continue }
-                highlights[row - top, default: []].append(SearchHighlight(columns: first...min(last, cols - 1), isCurrent: isCurrent))
+                highlights[row - top, default: []].append(SearchHighlight(columns: first...last, isCurrent: isCurrent))
             }
             index += 1
         }

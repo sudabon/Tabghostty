@@ -1,5 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
-  <rect width="128" height="128" rx="24" fill="#1e1e1e"/>
-  <path d="M28 84 L52 40 L76 84" stroke="#89d185" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M70 84 H100" stroke="#cccccc" stroke-width="10" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 128 128" fill="none">
+  <title>Tabghostty</title>
+  <desc>A white terminal ghost in a blue screen with three tabs and a silver frame.</desc>
+  <defs>
+    <linearGradient id="frame" x1="28" y1="8" x2="92" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5F7FC"/>
+      <stop offset="0.45" stop-color="#C5CEDC"/>
+      <stop offset="1" stop-color="#7D8BA2"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="64" y1="15" x2="64" y2="113" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111C33"/>
+      <stop offset="1" stop-color="#24344E"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="34" y1="28" x2="94" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1B5B95"/>
+      <stop offset="0.52" stop-color="#154684"/>
+      <stop offset="1" stop-color="#182B61"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="62" cy="64" r="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#39D3EE" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#39D3EE" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ghost" x1="51" y1="44" x2="78" y2="95" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#F0FCFF"/>
+      <stop offset="1" stop-color="#BCEBFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Inset silhouette leaves the transparent margin used by macOS Dock icons. -->
+  <rect x="8" y="10" width="112" height="112" rx="27" fill="#101B30" fill-opacity="0.18"/>
+  <rect x="8" y="7" width="112" height="112" rx="27" fill="url(#frame)"/>
+  <rect x="9" y="8" width="110" height="110" rx="26" stroke="#FFFFFF" stroke-opacity="0.5"/>
+  <rect x="15" y="14" width="98" height="98" rx="21" fill="url(#bezel)"/>
+  <rect x="19" y="18" width="90" height="90" rx="17" fill="url(#screen)"/>
+  <rect x="19" y="18" width="90" height="90" rx="17" fill="url(#glow)"/>
+
+  <!-- The raised active tab and two quiet tabs distinguish Tabghostty. -->
+  <path d="M19 35V35C19 25.61 26.61 18 36 18H92C101.39 18 109 25.61 109 35V38H19V35Z" fill="#122441"/>
+  <path d="M27 38V29C27 26.79 28.79 25 31 25H48C50.21 25 52 26.79 52 29V38" fill="#2874A6"/>
+  <path d="M32 26H47" stroke="#9DEBFF" stroke-width="2" stroke-linecap="round"/>
+  <rect x="57" y="27" width="20" height="6" rx="3" fill="#667E9D"/>
+  <rect x="82" y="27" width="17" height="6" rx="3" fill="#435C7D"/>
+
+  <!-- A terminal prompt is the face of the floating ghost. -->
+  <ellipse cx="64" cy="100" rx="23" ry="4" fill="#081A46" fill-opacity="0.3"/>
+  <path d="M40 70C40 56.75 50.75 46 64 46C77.25 46 88 56.75 88 70V90C88 94 84 96 81 94L76 91L70 95C66.5 97.5 62 97.5 58 95L52 91L47 94C44 96 40 94 40 90V70Z" fill="#6DDCF9" fill-opacity="0.16" stroke="#73DFFC" stroke-opacity="0.18" stroke-width="7"/>
+  <path d="M40 68C40 54.75 50.75 44 64 44C77.25 44 88 54.75 88 68V88C88 92 84 94 81 92L76 89L70 93C66.5 95.5 62 95.5 58 93L52 89L47 92C44 94 40 92 40 88V68Z" fill="url(#ghost)" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M51 62L60 69L51 76" stroke="#194971" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M68 76H78" stroke="#194971" stroke-width="4.5" stroke-linecap="round"/>
 </svg>

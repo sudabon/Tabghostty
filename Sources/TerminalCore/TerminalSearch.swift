@@ -82,9 +82,11 @@ final class TerminalSearcher {
         guard !needle.isEmpty else { return [] }
         try VTTerminal.check(ghostty_search_run(search), "ghostty_search_run")
 
+        // 必要な数を問い合わせる（ptr を NULL、cap を 0 にすると、一致があれば必ず OUT_OF_SPACE になる）。
+        // バッファは足りないときだけ広げる（呼ぶたびに広げると、検索し直すたびに倍になってメモリを使い切る）。
         var selections = GhosttySelectionBuffer(ptr: nil, cap: 0, len: 0)
         var result = ghostty_search_get(search, GHOSTTY_SEARCH_DATA_MATCHES, &selections)
-        if result == GHOSTTY_OUT_OF_SPACE || selections.len > buffer.count {
+        if selections.len > buffer.count {
             buffer = [GhosttySelection](repeating: GhosttySelection(), count: max(selections.len, buffer.count * 2))
         }
         guard selections.len > 0 || result == GHOSTTY_OUT_OF_SPACE else { return [] }
@@ -108,6 +110,9 @@ final class TerminalSearcher {
         }
         return matches
     }
+
+    /// 一致を受け取るバッファの大きさ（テスト用）。
+    var bufferCapacity: Int { buffer.count }
 
     private func setNeedle(_ needle: String) throws {
         let bytes = Array(needle.utf8)

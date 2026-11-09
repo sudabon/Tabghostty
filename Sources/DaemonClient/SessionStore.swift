@@ -38,6 +38,8 @@ public final class SessionStore {
     public private(set) var activeSessionID: String?
     /// 起動してから `sessions` フレームを 1 度でも受け取ったか。
     public private(set) var hasReceivedSessions = false
+    /// `sessions` フレームを受け取るたびに増える（再接続の後に、新しい一覧が届いたかを見分ける）。
+    public private(set) var listGeneration = 0
 
     /// 一覧かアクティブセッションが変わったときに呼ぶ。
     public var onChange: (() -> Void)?
@@ -60,6 +62,7 @@ public final class SessionStore {
             // 一覧は丸ごと置き換える。
             sessions = list
             hasReceivedSessions = true
+            listGeneration += 1
             selectActiveAfterListChange()
         case .state(let update):
             guard let index = sessions.firstIndex(where: { $0.id == update.sid }) else { return }

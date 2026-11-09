@@ -12,6 +12,8 @@ public final class MemoEditorSheet: NSWindowController, NSTextFieldDelegate {
 
     private let save: Save
     private let field = NSTextField()
+    /// 最後に受け付けた値（上限を超えたら、ここから増えた分だけを削る）。
+    private var acceptedText = ""
     private let remainingLabel = NSTextField(labelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let cancelButton = NSButton(title: "キャンセル", target: nil, action: nil)
@@ -32,6 +34,7 @@ public final class MemoEditorSheet: NSWindowController, NSTextFieldDelegate {
         super.init(window: panel)
         buildContent(in: panel)
         field.stringValue = MemoText.clamp(initialMemo)
+        acceptedText = field.stringValue
         updateRemaining()
     }
 
@@ -133,12 +136,16 @@ public final class MemoEditorSheet: NSWindowController, NSTextFieldDelegate {
     }
 
     private func textDidChange() {
-        let composing = (field.currentEditor() as? NSTextView)?.hasMarkedText() ?? false
+        let editor = field.currentEditor() as? NSTextView
+        let composing = editor?.hasMarkedText() ?? false
         if !composing {
-            let clamped = MemoText.clamp(field.stringValue)
-            if clamped != field.stringValue {
-                field.stringValue = clamped
+            // 31 文字目からは受け付けない。入力・ペーストした分の後ろを削り、もとの文字とカーソルの位置は残す。
+            let caret = editor.map { $0.selectedRange().location }
+            if let fitted = MemoText.fit(field.stringValue, previous: acceptedText, caret: caret) {
+                field.stringValue = fitted.text
+                field.currentEditor()?.selectedRange = NSRange(location: fitted.caret, length: 0)
             }
+            acceptedText = field.stringValue
         }
         updateRemaining()
     }

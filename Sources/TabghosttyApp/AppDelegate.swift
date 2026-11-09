@@ -21,6 +21,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
     private var shell: TabShellController?
     private var settingsWindow: SettingsWindowController?
     private var startupTask: Task<Void, Never>?
+    /// 接続が切れている間、デーモンが止まっていないかを確かめる。
+    private var connectionWatchTask: Task<Void, Never>?
+    /// 接続が切れてから、デーモンが待ち受けているかを確かめるまでの間隔。
+    static let connectionWatchInterval: Duration = .seconds(3)
     private var appObservers: [NSObjectProtocol] = []
     /// 通知（`.app` として起動していなければ、何も出さないもの）。
     private let notificationService = NativeNotificationService.forCurrentProcess()
@@ -89,6 +93,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
 
     private func startup() {
         startupTask?.cancel()
+        connectionWatchTask?.cancel()
+        connectionWatchTask = nil
         let previous = coordinator
         coordinator = nil
         shell = nil
@@ -180,7 +186,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
             self?.windowController?.showToast(message)
         }
         var everConnected = false
-        coordinator.onConnectionChange = { [weak shell] connected in
+        let port = coordinator.connection.port
+        coordinator.onConnectionChange = { [weak self, weak shell] connected in
+            shell?.connectionDidChange(connected: connected)
+            self?.connectionDidChange(connected, port: port)
             guard connected else { return }
             // 再接続したら設定を読み直す（切れている間にブラウザ版で変えたかもしれない）。
             if everConnected, let shell {
@@ -217,6 +226,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         }
     }
 
+    // MARK: - 接続が切れたとき
+
+    /// 切れたら帯を出し、つながったら消す。切れている間は、デーモンが待ち受けているかを確かめ、
+    /// 止まっていれば起動するボタンを出す（押すと、起動の手順をやり直す）。
+    private func connectionDidChange(_ connected: Bool, port: Int) {
+        connectionWatchTask?.cancel()
+        connectionWatchTask = nil
+        guard !connected else {
+            windowController?.hideConnectionLost()
+            return
+        }
+        let restart: () -> Void = { [weak self] in self?.startup() }
+        windowController?.showConnectionLost(daemonStopped: false, onStartDaemon: restart)
+        connectionWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.connectionWatchInterval)
+                guard !Task.isCancelled else { return }
+                // プローブは同期で最大 300 ms ブロックするので、メインスレッドの外で行う。
+                let result = await Task.detached { probeWebTabinal(port: port) }.value
+                guard !Task.isCancelled else { return }
+                self?.windowController?.showConnectionLost(daemonStopped: result == .notListening, onStartDaemon: restart)
+            }
+        }
+    }
+
     // MARK: - 通知のクリック（spec: notifications「Delivery and activation」、phase4 design D2）
 
     /// 通知がクリックされた: アプリを前面に出してウィンドウを見せ、そのセッションがまだあれば選ぶ。
@@ -246,7 +280,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
         )
         settingsWindow = controller
         controller.present()
-        Task { await shell.config.reload() }
+        let config = shell.config
+        Task { [weak controller] in
+            // 読めなかったら、表示している値が古いかもしれないことを知らせる。
+            if await !config.reload(), let message = config.reloadError {
+                controller?.showReloadFailure(message)
+            }
+        }
     }
 
     // MARK: - About（spec: app-shell「Version information in About」）
@@ -384,8 +424,16 @@ enum AppMenu {
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
         editItem.submenu = editMenu
+        // テキストフィールド（メモ・設定）の標準の編集操作。テキストフィールドは、メニューの項目が無いとこれらのキーを受けない。
+        // 端末にフォーカスがあるときは、端末が実装していないので無効になる（キーはセッションに送らない）。
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         // 端末の中の検索（spec: terminal-search）。検索欄にフォーカスがあっても、レスポンダチェーンで端末に届く。
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "検索…", action: #selector(TerminalFindActions.showFindBar(_:)), keyEquivalent: "f")

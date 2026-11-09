@@ -30,6 +30,8 @@ public actor WSConnection: TerminalFrameSink {
     private nonisolated let outbox = OSAllocatedUnfairLock<AsyncStream<String>.Continuation?>(initialState: nil)
     private var runTask: Task<Void, Never>?
     private var currentTask: URLSessionWebSocketTask?
+    /// 接続の失敗や切断の理由を残す（トークンは含めない）。
+    private static let log = Logger(subsystem: "com.tabghostty.app", category: "connection")
 
     public init(port: Int, token: String, sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
         self.port = port
@@ -109,6 +111,13 @@ public actor WSConnection: TerminalFrameSink {
                 task.cancel(with: .goingAway, reason: nil)
                 await handler(.disconnected)
             } else {
+                // 続けて失敗している間は、最初の 1 回だけ error で残す（5 秒ごとに同じログを出さない）。
+                let status = (task.response as? HTTPURLResponse).map { " (HTTP \($0.statusCode))" } ?? ""
+                if failures == 0 {
+                    Self.log.error("cannot connect to the daemon on port \(self.port, privacy: .public)\(status, privacy: .public); retrying")
+                } else {
+                    Self.log.debug("reconnect attempt \(failures, privacy: .public) failed\(status, privacy: .public)")
+                }
                 task.cancel()
             }
             currentTask = nil
@@ -130,6 +139,11 @@ public actor WSConnection: TerminalFrameSink {
             do {
                 message = try await task.receive()
             } catch {
+                if !Task.isCancelled {
+                    Self.log.error(
+                        "connection lost (close code \(task.closeCode.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+                    )
+                }
                 return
             }
             let decoded: ServerFrame?
@@ -154,7 +168,13 @@ public actor WSConnection: TerminalFrameSink {
                 do {
                     try await task.send(.string(text))
                 } catch {
-                    // 送れないなら接続は切れている。受信側が検出して再接続する。
+                    // 送れないなら接続は切れている。これ以上は積ませず（`enqueue` は false を返す）、
+                    // 受信を止めて再接続させる。
+                    // 取り消された（この接続はもう終わり、次の接続のキューがあるかもしれない）なら何もしない。
+                    guard !Task.isCancelled else { return }
+                    Self.log.error("send failed: \(error.localizedDescription, privacy: .public)")
+                    self.closeOutbox()
+                    task.cancel(with: .abnormalClosure, reason: nil)
                     return
                 }
             }

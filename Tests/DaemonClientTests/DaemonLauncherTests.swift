@@ -1,3 +1,4 @@
+import Darwin
 import DesktopSupport
 import Foundation
 import os
@@ -39,6 +40,29 @@ import Testing
         defer { server.stop() }
         let port = server.port
         #expect(await Task.detached { probeWebTabinal(port: port) }.value == .foreign)
+    }
+
+    // 待ち受けているが応答しない（デーモンが忙しいなど）なら、別のプロセスとは決めつけない。
+    @Test func probeReportsUnverifiedWhenNothingAnswers() async throws {
+        // listen はするが accept も応答もしないソケット（接続はカーネルが受け付ける）。
+        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        #expect(bound == 0)
+        #expect(listen(fd, 4) == 0)
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        let port = Int(UInt16(bigEndian: address.sin_port))
+        #expect(await Task.detached { probeWebTabinal(port: port) }.value == .unverified)
     }
 
     @Test func probeRecognizesAClosedPort() async throws {
@@ -123,6 +147,27 @@ import Testing
         #expect(error?.localizedDescription.contains(logPath) == true)
         // 0.15 秒間隔で 15 秒 = 100 回確かめる（最初の 1 回を加えて 101 回）。
         #expect(recorder.probes.withLock { $0 } == 101)
+    }
+
+    // 応答を読み切れなかったら確かめ直す。デーモンだと分かれば、2 つ目は起動しない。
+    @Test func unverifiedProbeIsRetriedBeforeDeciding() async throws {
+        let recorder = Recorder()
+        let started = try await launcher(results: [.unverified, .unverified, .daemon], recorder: recorder).ensureRunning()
+        #expect(started == false)
+        #expect(recorder.probes.withLock { $0 } == 3)
+        #expect(recorder.spawns.withLock { $0 }.isEmpty)
+    }
+
+    // 何度確かめても応答しなければ、別のプロセスとは言わずに、応答しないことを伝える（デーモンは起動しない）。
+    @Test func persistentlyUnverifiedPortIsReportedAsNotResponding() async throws {
+        let recorder = Recorder()
+        let error = await #expect(throws: DaemonLaunchError.self) {
+            try await launcher(results: [.unverified], recorder: recorder).ensureRunning()
+        }
+        #expect(error == .portNotResponding(port: 8642))
+        #expect(error?.localizedDescription.contains("not a compatible") == false)
+        #expect(recorder.probes.withLock { $0 } == 1 + DaemonLauncher.unverifiedRetries)
+        #expect(recorder.spawns.withLock { $0 }.isEmpty)
     }
 
     @Test func missingExecutableIsReported() async throws {

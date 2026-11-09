@@ -114,6 +114,44 @@ import TerminalCore
         #expect(TabPolicy.lastTabOutcome(previousCount: 2, currentCount: 1, quitWhenNoTabs: true) == .none)
     }
 
+    // デーモンが起動し直して、再接続した後の一覧が空でも、終了しない（利用者がタブを閉じたのではない）。
+    @Test func reconnectingToAnEmptyDaemonDoesNotQuit() async throws {
+        let harness = try ShellHarness()
+        var quits = 0
+        var messages: [String] = []
+        harness.shell.onQuitRequested = { quits += 1 }
+        harness.shell.onTransientMessage = { messages.append($0) }
+        await harness.liveSessions([session("a")])
+
+        harness.shell.connectionDidChange(connected: false)
+        harness.shell.connectionDidChange(connected: true)
+        await harness.deliver(.sessions([]))
+        #expect(quits == 0)
+        #expect(harness.shell.terminalArea.isEmptyStateVisible)
+        #expect(messages.count == 1)
+
+        // その後に利用者が作って閉じた最後のタブは、これまでどおり終了する。
+        await harness.liveSessions([session("b")])
+        #expect(!harness.shell.terminalArea.isEmptyStateVisible)
+        await harness.deliver(.sessions([]))
+        #expect(quits == 1)
+    }
+
+    // 再接続した後の一覧が届くまでの変化（同じ一覧のまま）では、何もしない。
+    @Test func reconnectingKeepsTabsWhenTheDaemonStillHasThem() async throws {
+        let harness = try ShellHarness()
+        var quits = 0
+        harness.shell.onQuitRequested = { quits += 1 }
+        await harness.liveSessions([session("a")])
+        harness.shell.connectionDidChange(connected: false)
+        harness.shell.connectionDidChange(connected: true)
+        await harness.deliver(.sessions([session("a")]))
+        #expect(quits == 0)
+        #expect(!harness.shell.terminalArea.isEmptyStateVisible)
+        await harness.deliver(.sessions([]))
+        #expect(quits == 1)
+    }
+
     // Scenario: Quit on last close
     @Test func closingTheLastTabQuits() async throws {
         let harness = try ShellHarness()
@@ -184,6 +222,33 @@ import TerminalCore
         #expect(MemoText.normalizedForSave("  レビュー対応  ") == "レビュー対応")
         #expect(MemoText.normalizedForSave("\u{3000}全角\u{3000}") == "全角")
         #expect(MemoText.normalizedForSave("   ") == "")
+    }
+
+    // Scenario: Limit — 上限のメモの途中に入力・ペーストしても、31 文字目は受け付けない（もとの末尾の文字は消さない）。
+    @Test func memoOverflowIsTrimmedFromTheInsertedTextNotTheTail() throws {
+        let full = String(repeating: "a", count: 28) + "yz"
+        // 2 文字目の後ろに 1 文字入力した: 入れた文字を捨て、カーソルは入れた位置のまま。
+        let typed = try #require(MemoText.fit("aa" + "x" + String(full.dropFirst(2)), previous: full, caret: 3))
+        #expect(typed.text == full)
+        #expect(typed.caret == 2)
+        // カーソルが分からなくても、変わっていない先頭と末尾から求める。
+        #expect(MemoText.fit("aa" + "x" + String(full.dropFirst(2)), previous: full)?.text == full)
+        // 25 文字のメモの途中に 10 文字ペーストした: 入る 5 文字だけ残し、末尾は残す。
+        let previous = String(repeating: "a", count: 20) + "tail!"
+        let pasted = String(previous.prefix(10)) + "0123456789" + String(previous.dropFirst(10))
+        let fitted = try #require(MemoText.fit(pasted, previous: previous, caret: 20))
+        #expect(fitted.text == String(previous.prefix(10)) + "01234" + String(previous.dropFirst(10)))
+        #expect(fitted.text.hasSuffix("tail!"))
+        #expect(fitted.caret == 15)
+        // 上限に収まっていれば何もしない。
+        #expect(MemoText.fit("short", previous: "shor") == nil)
+        // code point で数え、カーソルは UTF-16 の位置。
+        let emoji = String(repeating: "🙂", count: 30)
+        let withExtra = try #require(MemoText.fit("🙂" + "🎉" + String(emoji.dropFirst()), previous: emoji, caret: 4))
+        #expect(withExtra.text == emoji)
+        #expect(withExtra.caret == 2)
+        // 何もない状態から長い文字列を入れたら、先頭の 30 文字。
+        #expect(MemoText.fit(String(repeating: "b", count: 40), previous: "")?.text == String(repeating: "b", count: 30))
     }
 
     @Test func memoSheetClampsSavesTrimmedAndStaysOpenOnFailure() async throws {

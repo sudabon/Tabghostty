@@ -81,7 +81,7 @@ Tabghostty と WebTabinal.app は、同じデーモン、同じ config.json、�
 1. 「[クイックスタート](#クイックスタート)」のとおりに、Tabghostty をインストールして起動します。WebTabinal.app が起動したデーモンが動いていれば、Tabghostty はそれにつなぐので、今のタブがそのまま見えます。
 2. **通知の許可を取り直します。** バンドル ID が違う（`com.tabghostty.app`。WebTabinal.app は `com.webtabinal.app`）ので、macOS の通知の許可は別になります。設定（Command-,）の「通知」で「通知を許可」を押してください。自動では求めません。
 3. **ブラウザ版の通知を無効にすることを推奨します。** ブラウザ版と Tabghostty の両方で通知を許可していると、同じイベントで通知が 2 回出ます。ブラウザのサイトの設定で、`http://127.0.0.1:8642` の通知をオフにしてください。
-4. WebTabinal.app を終了し、`/Applications/WebTabinal.app` を削除します。移行の間は、2 つのアプリのアイコンが同じなので、Dock で見分けにくいことがあります。
+4. WebTabinal.app を終了し、`/Applications/WebTabinal.app` を削除します。Tabghostty は、青い画面に白いゴーストとタブを描いた専用アイコンで見分けられます。
 5. （任意）セッションを閉じてよいときに、WebTabinal.app のデーモンを止めて、同梱のデーモンに切り替えます（手順は「[更新の手順](#更新の手順)」）。WebTabinal.app のデーモンのままでも Tabghostty は動きますが、同梱のデーモンに切り替えると、エージェントの状態の検出に使う画面が Tabghostty の表示と同じエンジンになり、出力の転送も速くなります。
 
 ## 使い方

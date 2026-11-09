@@ -5,6 +5,8 @@ import Foundation
 public enum DaemonLaunchError: Error, Equatable, LocalizedError {
     /// デーモン以外のプロセスがポートで待ち受けている。
     case portInUseByAnotherProcess(port: Int)
+    /// 何かがポートで待ち受けているが、何度確かめても時間内に応答しなかった。
+    case portNotResponding(port: Int)
     /// 同梱のデーモンが見つからない。
     case executableNotFound(path: String)
     /// 起動できなかった。
@@ -15,7 +17,9 @@ public enum DaemonLaunchError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .portInUseByAnotherProcess(let port):
-            return "Port \(port) is in use by a process that is not the webtabinal daemon. Stop it, or change port in config.json."
+            return "Port \(port) is in use by a process that is not a compatible webtabinal daemon (another program, or an older daemon). Stop it, or change port in config.json."
+        case .portNotResponding(let port):
+            return "Something is listening on port \(port) but did not answer in time. If it is the webtabinal daemon, it may be busy; try again."
         case .executableNotFound(let path):
             return "The bundled webtabinal daemon was not found at \(path). Set TABGHOSTTY_DAEMON_PATH to the daemon binary when running outside the app bundle."
         case .spawnFailed(let reason):
@@ -36,6 +40,8 @@ public struct DaemonLauncher: Sendable {
     public var executablePath: String
     public var logPath: String
     public var timeout: Duration = .seconds(15)
+    /// 応答を読み切れなかったときに、確かめ直す回数。
+    static let unverifiedRetries = 5
     public var interval: Duration = .milliseconds(150)
     var probe: Probe
     var spawn: Spawn
@@ -80,12 +86,23 @@ public struct DaemonLauncher: Sendable {
     /// - Returns: このプロセスがデーモンを起動したなら true
     @discardableResult
     public func ensureRunning() async throws -> Bool {
-        switch probe(port) {
+        // 待ち受けているが応答を読み切れない（忙しいデーモンかもしれない）なら、少し待って確かめ直す。
+        var result = probe(port)
+        var retries = 0
+        while result == .unverified, retries < Self.unverifiedRetries {
+            retries += 1
+            try await sleep(interval)
+            result = probe(port)
+        }
+        switch result {
         case .daemon:
             return false
         case .foreign:
             // 2 つ目のデーモンは起動しない。
             throw DaemonLaunchError.portInUseByAnotherProcess(port: port)
+        case .unverified:
+            // 何かが待ち受けているので、2 つ目のデーモンは起動しない。別のプロセスとも決めつけない。
+            throw DaemonLaunchError.portNotResponding(port: port)
         case .notListening:
             break
         }
