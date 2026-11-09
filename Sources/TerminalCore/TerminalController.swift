@@ -389,16 +389,20 @@ public actor TerminalController {
     // MARK: - ビューから（spec: terminal-rendering「Grid size follows the view」）
 
     /// ビューのグリッドサイズを反映する。live でグリッドが変わったら `resize` を送る。
+    /// 端末のリサイズに失敗したら、前のサイズのままにする（そのサイズを PTY に送ると、シェルと端末の大きさが食い違う）。
     public func setViewGrid(_ grid: GridSize) {
         let previous = viewGrid
-        viewGrid = grid
         do {
             try terminal.resize(
                 cols: grid.cols, rows: grid.rows, cellWidthPx: grid.cellWidthPx, cellHeightPx: grid.cellHeightPx
             )
         } catch {
+            Self.log.error(
+                "resize to \(grid.cols, privacy: .public)x\(grid.rows, privacy: .public) failed (sid=\(self.sid, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
             return
         }
+        viewGrid = grid
         // mode 2048 のサイズ報告が出ることがある。リサイズは同期出力の保留も解く。
         routeEffects()
         updateRenderHold()

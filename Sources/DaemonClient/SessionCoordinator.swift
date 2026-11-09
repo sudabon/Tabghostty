@@ -66,7 +66,10 @@ public final class SessionCoordinator {
 
     /// アクティブセッションの端末。
     public private(set) var activeController: TerminalController?
-    public private(set) var isConnected = false
+    public var isConnected: Bool { reportedConnection == true }
+    /// 最後に `onConnectionChange` で知らせた接続状態。まだ知らせていなければ nil
+    /// （最初の接続に失敗したときも、つながっていないことを知らせる）。
+    private var reportedConnection: Bool?
     /// ウィンドウの端末領域のグリッドサイズ。全セッションの端末に反映する。
     public var viewGrid: TerminalController.GridSize? {
         didSet {
@@ -90,6 +93,10 @@ public final class SessionCoordinator {
     public var onTransientMessage: ((String) -> Void)?
     /// 接続状態が変わった。
     public var onConnectionChange: ((Bool) -> Void)?
+    /// デーモンが接続要求を拒否した（HTTP 401 / 403。トークンが変わったなど）。
+    public var onConnectionRejected: ((Int) -> Void)?
+    /// 起動時に（セッションが 1 つも無いので）作ったセッションの作成に失敗した。失敗の文は `onTransientMessage` で知らせる。
+    public var onStartupSessionFailure: (() -> Void)?
 
     public init(
         connection: WSConnection,
@@ -146,6 +153,8 @@ public final class SessionCoordinator {
                 await controller.connectionLost()
             }
             await MainActor.run { self.setConnected(false) }
+        case .rejected(let status):
+            await MainActor.run { self.onConnectionRejected?(status) }
         case .frame(let frame):
             await route(frame)
         }
@@ -311,12 +320,16 @@ public final class SessionCoordinator {
         }
     }
 
-    private func runActivating(_ request: @escaping @Sendable () async throws -> SessionInfo) async {
+    private func runActivating(
+        _ request: @escaping @Sendable () async throws -> SessionInfo,
+        onFailure: (() -> Void)? = nil
+    ) async {
         do {
             let session = try await request()
             activate(session.id)
         } catch {
             onTransientMessage?(error.localizedDescription)
+            onFailure?()
         }
     }
 
@@ -330,15 +343,17 @@ public final class SessionCoordinator {
         case .useExisting:
             return
         case .create:
-            Task { await self.runActivating { try await self.api.createSession(cwd: nil) } }
+            Task {
+                await self.runActivating({ try await self.api.createSession(cwd: nil) }, onFailure: { self.onStartupSessionFailure?() })
+            }
         case .restart(let id):
             Task { await self.runActivating { try await self.api.restartSession(id: id) } }
         }
     }
 
     private func setConnected(_ connected: Bool) {
-        guard isConnected != connected else { return }
-        isConnected = connected
+        guard reportedConnection != connected else { return }
+        reportedConnection = connected
         onConnectionChange?(connected)
     }
 }

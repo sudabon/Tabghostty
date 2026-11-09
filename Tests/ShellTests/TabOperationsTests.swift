@@ -31,12 +31,19 @@ import TerminalCore
         let harness = try ShellHarness()
         await harness.liveSessions([session("a"), session("dead", state: "exited")])
 
+        // できたセッションは、デーモンの `sessions` で一覧に入ったときにアクティブになる。
         harness.shell.createTab()
+        #expect(await waitUntil { harness.api.calls.contains("create") })
+        await harness.deliver(.sessions([session("a"), session("dead", state: "exited"), session("created")]))
         #expect(await waitUntil { harness.store.activeSessionID == "created" })
         harness.shell.perform(.duplicate, on: "a")
+        #expect(await waitUntil { harness.api.calls.contains("duplicate:a") })
+        await harness.deliver(.sessions([session("a"), session("dead", state: "exited"), session("created"), session("duplicated")]))
         #expect(await waitUntil { harness.store.activeSessionID == "duplicated" })
         harness.shell.perform(.restart, on: "a")
         harness.shell.perform(.restart, on: "dead")
+        #expect(await waitUntil { harness.api.calls.contains("restart:dead") })
+        await harness.deliver(.sessions([session("a"), session("restarted"), session("created"), session("duplicated")]))
         #expect(await waitUntil { harness.store.activeSessionID == "restarted" })
         #expect(harness.api.calls == ["create", "duplicate:a", "restart:dead"])
     }
@@ -179,6 +186,22 @@ import TerminalCore
         // 「＋ 新規タブ」で作る。
         harness.shell.terminalArea.onNewTab?()
         #expect(await waitUntil { harness.api.calls == ["create"] })
+        await harness.liveSessions([session("created")])
+        #expect(!harness.shell.terminalArea.isEmptyStateVisible)
+    }
+
+    // 起動したときにセッションを作れなかったら（シェルの設定が誤っているなど）、空の画面のままにせず「新規タブ」を出す。
+    @Test func aFailedStartupSessionShowsTheEmptyState() async throws {
+        let harness = try ShellHarness()
+        harness.api.failCreate = true
+        await harness.deliver(.sessions([]))
+        #expect(await waitUntil { harness.api.calls == ["create"] })
+        #expect(await waitUntil { harness.shell.terminalArea.isEmptyStateVisible })
+
+        // 「＋ 新規タブ」で作り直せる。
+        harness.api.failCreate = false
+        harness.shell.terminalArea.onNewTab?()
+        #expect(await waitUntil { harness.api.calls == ["create", "create"] })
         await harness.liveSessions([session("created")])
         #expect(!harness.shell.terminalArea.isEmptyStateVisible)
     }

@@ -75,9 +75,11 @@ func TestFixtureReferenceScreens(t *testing.T) {
 				}
 				return
 			}
+			// Every fixture has a reference screen once `make screens` has run (bundled-daemon
+			// "Reference screen generation"), so a missing one fails instead of skipping silently.
 			want, err := os.ReadFile(screenPath)
 			if os.IsNotExist(err) {
-				t.Skipf("%s has no %s (run make screens)", name, referenceScreenFile)
+				t.Fatalf("%s has no %s (run make screens)", name, referenceScreenFile)
 			}
 			if err != nil {
 				t.Fatal(err)

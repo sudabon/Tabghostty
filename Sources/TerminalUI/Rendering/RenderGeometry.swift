@@ -157,8 +157,12 @@ struct MarkedTextCell: Equatable {
 
 extension TerminalView {
     /// 行 `y` の列 `x` のセルを描く色（セルの色に、検索の強調と選択の色を重ねたもの）。
+    ///
+    /// 全角文字の右半分のセル（spacer tail）は、左半分の列で強調と選択を調べる。libghostty は、一致や選択の終わりの列として
+    /// 全角文字の左半分の列を返すため、右半分の列で調べると、全角文字で終わる一致や選択の最後の文字が半分しか塗られない。
     func rowCellColors(_ cell: CellSnapshot, x: Int, y: Int) -> ResolvedColors {
         var colors = resolveColors(cell)
+        let x = cell.width == .spacerTail ? max(0, x - 1) : x
         if let highlight = searchHighlightKind(x: x, y: y) {
             // 検索の一致は背景を塗り、文字は読める色に補正する（spec: terminal-search）。
             let background = highlight == .current ? palette.searchCurrentMatch : palette.searchMatch

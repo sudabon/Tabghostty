@@ -120,6 +120,22 @@ import Testing
         #expect(sink.frames == [.resize(sid: "s1", cols: 91, rows: 30)])
     }
 
+    // 端末のリサイズに失敗したら（ここでは範囲外の列数）、前のサイズのままにする。そのサイズを PTY に送ると、
+    // シェルと端末の大きさが食い違う。
+    @Test func aFailedResizeKeepsThePreviousGrid() async throws {
+        let sink = RecordingSink()
+        let controller = try makeController(sink)
+        await controller.setViewGrid(.init(cols: 90, rows: 30, cellWidthPx: 8, cellHeightPx: 17))
+        await controller.attach()
+        await controller.receiveReplay([], done: true)
+        sink.removeAll()
+
+        await controller.setViewGrid(.init(cols: 70_000, rows: 30, cellWidthPx: 8, cellHeightPx: 17))
+        #expect(await controller.viewGrid == .init(cols: 90, rows: 30, cellWidthPx: 8, cellHeightPx: 17))
+        await controller.resendViewSize()
+        #expect(sink.frames == [.resize(sid: "s1", cols: 90, rows: 30)])
+    }
+
     // Requirement: Input batching and gating — Scenario: Fast typing
     @MainActor
     @Test func keysInOneRunLoopTurnAreSentAsOneFrame() async throws {

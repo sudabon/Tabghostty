@@ -53,10 +53,15 @@ public enum LinkDetector {
     // MARK: - 素の URL
 
     /// URL の一部にしない文字（ここで URL が終わる）。
+    /// 日本語の文中の全角の約物・括弧・引用符も含める（`（https://…）を参照`、`…/docs。次へ`）。
     private static func terminates(_ character: Character) -> Bool {
         if character.isWhitespace { return true }
         switch character {
         case "<", ">", "\"", "'", "`": return true
+        case "、", "。", "，", "．", "：", "；", "！", "？": return true
+        case "（", "）", "［", "］", "｛", "｝", "＜", "＞", "「", "」", "『", "』", "【", "】", "〈", "〉", "《", "》", "〔", "〕":
+            return true
+        case "\u{201C}", "\u{201D}", "\u{2018}", "\u{2019}": return true  // “ ” ‘ ’
         default: return false
         }
     }
@@ -67,7 +72,7 @@ public enum LinkDetector {
 
     /// 文字の並びの中の `http://` / `https://` の URL の範囲（文字の位置）。
     ///
-    /// `https?://` の後に、空白・`<`・`>`・`"`・`'`・バッククォート以外の文字が続く範囲を URL とし、
+    /// `https?://` の後に、空白・`<`・`>`・`"`・`'`・バッククォート・全角の約物と括弧以外の文字が続く範囲を URL とし、
     /// 末尾の約物（`.` `,` `;` `:` `!` `?`）と、対応の取れていない閉じ括弧（`)` `]` `}`）を取り除く。
     public static func urlRanges(in characters: [Character]) -> [Range<Int>] {
         var ranges: [Range<Int>] = []
@@ -93,9 +98,12 @@ public enum LinkDetector {
     }
 
     /// `at` から `http://` / `https://`（大文字小文字は区別しない）が始まっていれば、その直後の位置。
-    /// 英数字の直後（`xhttp://` など）は URL の始まりとみなさない。
+    /// ASCII の英数字の直後（`xhttp://` など）は URL の始まりとみなさない。かなや漢字の直後（`詳細はhttps://`）は始まりとみなす。
     private static func schemeEnd(in characters: [Character], at index: Int) -> Int? {
-        if index > 0, characters[index - 1].isLetter || characters[index - 1].isNumber { return nil }
+        if index > 0 {
+            let previous = characters[index - 1]
+            if previous.isASCII, previous.isLetter || previous.isNumber { return nil }
+        }
         for scheme in ["https://", "http://"] {
             let pattern = Array(scheme)
             guard index + pattern.count <= characters.count else { continue }

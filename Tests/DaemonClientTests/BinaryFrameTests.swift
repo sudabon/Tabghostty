@@ -20,22 +20,45 @@ import TerminalCore
         #expect(decode(message(0x03, "s1", [])) == .replay(sid: "s1", data: [], done: true))
     }
 
-    // 同梱のデーモンのエンコーダと同じバイト列を読めること
-    // （daemon/internal/server/ws_binary_test.go の goldenBinaryFrame と同じ値）。
-    @Test func goldenVectorFromTheBundledDaemon() {
-        let hex = "032431323365343536372d653839622d313264332d613435362d3432363631343137343030301b5b33316de697a5e69cac1b5b306d0d0a"
+    // 同梱のデーモンのエンコーダと同じバイト列を読めること。基準のバイト列は Go のテスト
+    // （daemon/internal/server/ws_binary_test.go の TestBinaryFramesMatchTheSharedVectors）と同じファイルから読む。
+    @Test func sharedVectorsFromTheBundledDaemon() throws {
+        struct Vector: Decodable {
+            let name: String
+            let kind: UInt8
+            let sid: String
+            let payload_hex: String
+            let frame_hex: String
+        }
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("daemon/internal/server/testdata/binary_frames.json")
+        let vectors = try JSONDecoder().decode([Vector].self, from: Data(contentsOf: url))
+        #expect(Set(vectors.map(\.kind)) == [0x01, 0x02, 0x03])
+        for vector in vectors {
+            let payload = try #require(Self.bytes(hex: vector.payload_hex), "\(vector.name)")
+            let frame = try #require(Self.bytes(hex: vector.frame_hex), "\(vector.name)")
+            let expected: ServerFrame? = switch vector.kind {
+            case 0x01: .output(sid: vector.sid, data: payload)
+            case 0x02: .replay(sid: vector.sid, data: payload, done: false)
+            case 0x03: .replay(sid: vector.sid, data: payload, done: true)
+            default: nil
+            }
+            #expect(decode(Data(frame)) == expected, "\(vector.name)")
+        }
+    }
+
+    private static func bytes(hex: String) -> [UInt8]? {
+        guard hex.count.isMultiple(of: 2) else { return nil }
         var bytes: [UInt8] = []
         var index = hex.startIndex
         while index < hex.endIndex {
             let next = hex.index(index, offsetBy: 2)
-            bytes.append(UInt8(hex[index..<next], radix: 16)!)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
             index = next
         }
-        #expect(decode(Data(bytes)) == .replay(
-            sid: "123e4567-e89b-12d3-a456-426614174000",
-            data: Array("\u{1b}[31m日本\u{1b}[0m\r\n".utf8),
-            done: true
-        ))
+        return bytes
     }
 
     @Test func payloadBytesArePassedThroughUnchanged() {

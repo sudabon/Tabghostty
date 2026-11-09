@@ -42,6 +42,15 @@ import Testing
         #expect(isWebTabinalProbeResponse(Data(Self.validProbeResponse.utf8)))
     }
 
+    // 同梱のデーモンが返す応答を、デーモンだと認めること。応答は Go のテスト
+    // （daemon/internal/server/contract_test.go）が記録する。デーモンを取り込み直して応答が変わると、ここで分かる。
+    @Test func probeAcceptsTheBundledDaemonsRecordedResponse() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("daemon/internal/server/testdata/probe_unauthorized.http")
+        #expect(isWebTabinalProbeResponse(try Data(contentsOf: url)))
+    }
+
     @Test func probeRejectsStaleCSP() {
         let staleCSP = [
             "HTTP/1.1 401 Unauthorized\r\n",

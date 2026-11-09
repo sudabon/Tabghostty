@@ -6,7 +6,8 @@ import Testing
 ///
 /// 手順は「バージョンを照合する → フィクスチャを流す → screen.txt と比べる」。
 /// screen.txt は同梱のデーモン（`daemon/`）の `-update-screens` だけが生成し、`make screens` で作り直して取り込む。
-/// screen.txt の無いフィクスチャは skip する（テストケースを cancel する）。
+/// screen.txt の無いフィクスチャは skip する（テストケースを cancel する）。ただし、このリポジトリのフィクスチャにはすべてあること
+/// を `everyFixtureHasAReferenceScreen` で確かめる。
 @Suite struct EngineParityTests {
     /// screen.meta.json（`daemon/internal/agentdetect/screens_test.go` の `-update-screens` が書く。phase6 design D2）。
     struct ReferenceMetadata: Decodable {
@@ -85,16 +86,18 @@ import Testing
         }
     }
 
-    // Scenario: Reference missing — cancel したテストケースは、swift test のコンソールでは passed と表示される
-    // （event stream では testCaseCancelled）。一致検証をしていないことが分かるように、件数を出力する。
-    @Test func reportsHowManyFixturesHaveReferenceScreens() {
+    // 上の一致検証は、screen.txt の無いフィクスチャを skip する（Scenario: Reference missing）。cancel したテストケースは
+    // swift test のコンソールでは passed と表示されるので、skip したことに気づけない。このリポジトリのフィクスチャは
+    // `make screens` で screen.txt を作ってから取り込む（spec: bundled-daemon「Reference screen generation」）ので、
+    // すべてにあることをここで確かめる。無ければ `make screens` を実行する。
+    @Test func everyFixtureHasAReferenceScreen() {
         let fixtures = FixtureStreamTests.fixtures
-        let skipped = fixtures.filter { fixture in
+        #expect(!fixtures.isEmpty)
+        let missing = fixtures.filter { fixture in
             let url = FixtureStreamTests.fixturesRoot.appendingPathComponent(fixture.name).appendingPathComponent(Self.referenceFileName)
             return !FileManager.default.fileExists(atPath: url.path)
         }
-        print("engine-parity: \(Self.referenceFileName) のあるフィクスチャ \(fixtures.count - skipped.count)/\(fixtures.count) 件で一致を検証する（skip \(skipped.count) 件）")
-        #expect(!fixtures.isEmpty)
+        #expect(missing.isEmpty, "\(Self.referenceFileName) が無い（make screens を実行する）: \(missing.map(\.name).joined(separator: ", "))")
     }
 
     // MARK: - 比べ方そのもの

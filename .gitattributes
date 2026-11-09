@@ -1,0 +1,2 @@
+# 記録した HTTP の応答（CRLF を含む）は、改行を書き換えない。
+daemon/internal/server/testdata/*.http -text

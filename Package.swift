@@ -62,7 +62,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TabghosttyAppTests",
-            dependencies: ["TabghosttyApp", "Shell", "DaemonClient"]
+            dependencies: ["TabghosttyApp", "Shell", "DaemonClient", "DesktopSupport"]
         ),
         .testTarget(
             name: "ShellTests",

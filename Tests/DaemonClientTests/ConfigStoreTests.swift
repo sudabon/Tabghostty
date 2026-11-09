@@ -17,6 +17,8 @@ final class FakeConfigAPI: ConfigAPI, @unchecked Sendable {
         var patches: [ConfigPatch] = []
         var deferred: [CheckedContinuation<ClientSettings, Error>] = []
         var holdPatches = false
+        var heldFetches: [CheckedContinuation<ClientSettings, Error>] = []
+        var holdFetches = false
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -37,16 +39,42 @@ final class FakeConfigAPI: ConfigAPI, @unchecked Sendable {
         set { state.withLock { $0.holdPatches = newValue } }
     }
 
+    /// true なら `GET` の応答を保留する（`releaseFetch` / `failFetch` で返す）。
+    var holdFetches: Bool {
+        get { state.withLock { $0.holdFetches } }
+        set { state.withLock { $0.holdFetches = newValue } }
+    }
+
+    var heldFetchCount: Int { state.withLock { $0.heldFetches.count } }
+
     var fetches: Int { state.withLock { $0.fetches } }
     var patches: [ConfigPatch] { state.withLock { $0.patches } }
     var pendingCount: Int { state.withLock { $0.deferred.count } }
 
     func fetchSettings() async throws -> ClientSettings {
-        try state.withLock { state in
+        let hold = state.withLock { state -> Bool in
             state.fetches += 1
+            return state.holdFetches
+        }
+        if hold {
+            return try await withCheckedThrowingContinuation { continuation in
+                state.withLock { $0.heldFetches.append(continuation) }
+            }
+        }
+        return try state.withLock { state in
             if state.fetchFails { throw Failure(message: "fetch failed") }
             return state.next
         }
+    }
+
+    /// 保留している `index` 番目の GET に、`settings` で応答する。
+    func releaseFetch(_ index: Int, with settings: ClientSettings) {
+        state.withLock { $0.heldFetches[index] }.resume(returning: settings)
+    }
+
+    /// 保留している `index` 番目の GET を失敗させる。
+    func failFetch(_ index: Int) {
+        state.withLock { $0.heldFetches[index] }.resume(throwing: Failure(message: "fetch failed"))
     }
 
     func patchConfig(_ patch: ConfigPatch) async throws -> ClientSettings {
@@ -174,5 +202,66 @@ func settled(_ condition: () -> Bool) async -> Bool {
         try await edit.value
         #expect(store.settings == server)
         #expect(store.committed == server)
+    }
+
+    // 保存が終わる前に始まった読み直しは、保存より前の値を返すことがある。その値で、保存したキーを巻き戻さない
+    // （巻き戻すと、次に全体で置き換える変更が古い値から作られ、保存した変更を config.json から消してしまう）。
+    @Test func aReloadStartedBeforeASaveFinishedKeepsTheSavedValue() async throws {
+        let api = FakeConfigAPI()
+        let store = ConfigStore(settings: ClientSettings(), api: api)
+        let editor = ConfigEditor(store: store, api: api)
+        api.holdFetches = true
+        let reload = Task { await store.reload() }
+        #expect(await settled { api.heldFetchCount == 1 })
+
+        try await editor.apply(ConfigPatch(colorScheme: .dark))
+        #expect(store.settings.display.colorScheme == .dark)
+
+        var stale = ClientSettings()
+        stale.display.fontSize = 13
+        api.releaseFetch(0, with: stale)
+        #expect(await reload.value)
+        #expect(store.settings.display.colorScheme == .dark)
+        #expect(store.committed.display.colorScheme == .dark)
+        // 保存していないキーは、読み直した値になる。
+        #expect(store.settings.display.fontSize == 13)
+    }
+
+    // 読み直しが重なったら、新しい読み直しの結果を使う（古い読み直しの応答が後から届いても、成功でも失敗でも何もしない）。
+    @Test func anOlderReloadDoesNotOverrideANewerOne() async throws {
+        let api = FakeConfigAPI()
+        let store = ConfigStore(settings: ClientSettings(), api: api)
+        api.holdFetches = true
+        let older = Task { await store.reload() }
+        #expect(await settled { api.heldFetchCount == 1 })
+        let newer = Task { await store.reload() }
+        #expect(await settled { api.heldFetchCount == 2 })
+
+        var newerValue = ClientSettings()
+        newerValue.display.fontSize = 20
+        api.releaseFetch(1, with: newerValue)
+        #expect(await newer.value)
+        var olderValue = ClientSettings()
+        olderValue.display.fontSize = 10
+        api.releaseFetch(0, with: olderValue)
+        _ = await older.value
+        #expect(store.settings.display.fontSize == 20)
+        #expect(store.committed.display.fontSize == 20)
+    }
+
+    @Test func anOlderFailedReloadDoesNotMarkTheSettingsStale() async throws {
+        let api = FakeConfigAPI()
+        let store = ConfigStore(settings: ClientSettings(), api: api)
+        api.holdFetches = true
+        let older = Task { await store.reload() }
+        #expect(await settled { api.heldFetchCount == 1 })
+        let newer = Task { await store.reload() }
+        #expect(await settled { api.heldFetchCount == 2 })
+
+        api.releaseFetch(1, with: ClientSettings())
+        #expect(await newer.value)
+        api.failFetch(0)
+        #expect(await older.value == false)
+        #expect(store.reloadError == nil)
     }
 }

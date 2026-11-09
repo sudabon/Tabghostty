@@ -134,6 +134,9 @@ public final class TerminalView: NSView {
     var inputMethodPassedCommand = false
     /// 未確定の文字列が、別のタブから戻したもの（IME はこの文字列を知らない）。
     var isRestoredComposition = false
+    /// キーを IME とキーの割り当てに渡す処理。nil なら AppKit の `interpretKeyEvents`。
+    /// IME の振る舞い（確定してからキーをコマンドとして返すなど）をテストで再現するために差し替える。
+    var keyEventInterpreter: ((NSEvent) -> Void)?
     /// コードの判定で使ったキー（離したことも端末に送らない）。
     private var chordConsumedKeyCodes: Set<UInt16> = []
     /// 最後に報告したキーボードフォーカス。
@@ -336,7 +339,7 @@ public final class TerminalView: NSView {
             // 変換中のキーは IME のもの。確定した文字列だけが insertText で届く。
             isInterpretingForInputMethod = true
             inputMethodPassedCommand = false
-            interpretKeyEvents([event])
+            interpretKey(event)
             isInterpretingForInputMethod = false
             // IME が確定してから、そのキーをコマンドとして返した（韓国語の入力の Return や矢印、Option-E の後の Return など）。
             // 変換が終わっていれば、確定した文字列（insertText で送った）の後に、そのキーを送る。
@@ -359,12 +362,20 @@ public final class TerminalView: NSView {
         restartBlink()
     }
 
+    private func interpretKey(_ event: NSEvent) {
+        if let keyEventInterpreter {
+            keyEventInterpreter(event)
+        } else {
+            interpretKeyEvents([event])
+        }
+    }
+
     /// `interpretKeyEvents` に渡し、`insertText` で届いた文字を付けてキーエンコーダに渡す
     /// （Option で合成した文字・デッドキー・IME の変換の開始もここを通る）。
     private func interpret(_ event: NSEvent) {
         insertedTexts = []
         markedTextChangedDuringInterpret = false
-        interpretKeyEvents([event])
+        interpretKey(event)
         let texts = insertedTexts ?? []
         insertedTexts = nil
         // IME が変換を始めた（デッドキーを含む）。確定するまで何も送らない。

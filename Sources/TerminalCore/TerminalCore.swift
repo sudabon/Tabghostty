@@ -85,7 +85,7 @@ public final class VTTerminal {
     ///   - cellWidthPx: セルの幅（device pixel）。不明なら 0
     ///   - cellHeightPx: セルの高さ（device pixel）。不明なら 0
     public init(cols: Int, rows: Int, maxScrollback: Int, cellWidthPx: Int = 0, cellHeightPx: Int = 0) throws {
-        Self.checkGrid(cols: cols, rows: rows)
+        try Self.checkGrid(cols: cols, rows: rows)
         precondition(maxScrollback >= 0, "maxScrollback must not be negative")
         // PNG の展開などのプロセス全体の設定は、最初の端末を作る前に済ませる（2 回目以降は何もしない）。
         GhosttySystem.install()
@@ -159,7 +159,7 @@ public final class VTTerminal {
     /// 列数・行数と、セルのピクセルサイズ（device pixel）を変える。
     /// mode 2048 が有効なら in-band のサイズ報告が effect として積まれる。
     public func resize(cols: Int, rows: Int, cellWidthPx: Int, cellHeightPx: Int) throws {
-        Self.checkGrid(cols: cols, rows: rows)
+        try Self.checkGrid(cols: cols, rows: rows)
         let width = UInt32(max(0, cellWidthPx))
         let height = UInt32(max(0, cellHeightPx))
         try Self.check(
@@ -375,9 +375,12 @@ public final class VTTerminal {
         )
     }
 
-    private static func checkGrid(cols: Int, rows: Int) {
-        precondition((1...Int(UInt16.max)).contains(cols), "cols out of range: \(cols)")
-        precondition((1...Int(UInt16.max)).contains(rows), "rows out of range: \(rows)")
+    /// 列数と行数が 1〜65535 か（libghostty の `uint16_t`）。範囲外なら `GHOSTTY_INVALID_VALUE` の `VTError` を投げる。
+    private static func checkGrid(cols: Int, rows: Int) throws {
+        let range = 1...Int(UInt16.max)
+        guard range.contains(cols), range.contains(rows) else {
+            throw VTError(function: "grid size \(cols)x\(rows)", code: GHOSTTY_INVALID_VALUE.rawValue)
+        }
     }
 
     static func check(_ result: GhosttyResult, _ function: String) throws {

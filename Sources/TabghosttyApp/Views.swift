@@ -1,4 +1,5 @@
 import AppKit
+import DesktopSupport
 
 /// 起動に失敗したときの画面（エラー文と再試行ボタン）。spec: app-shell「Startup failure screen」。
 @MainActor
@@ -160,15 +161,60 @@ final class ToastView: NSVisualEffectView {
     }
 }
 
+/// 接続が切れている理由（帯の文言とボタンを決める）。
+enum ConnectionLostReason: Equatable, Sendable {
+    /// デーモンは動いている（か、まだ分からない）。再接続を続ける。
+    case reconnecting
+    /// デーモンが待ち受けていない。起動するボタンを出す。
+    case daemonStopped
+    /// ほかのプログラムがポートを使っている。起動の手順をやり直すボタンを出す。
+    case portInUse(port: Int)
+    /// デーモンがトークンを拒否した（HTTP 401 / 403。config.json が作り直されたなど）。
+    /// 同じトークンでは何度再接続しても通らないので、config.json を読み直してつなぎ直すボタンを出す。
+    case rejected(status: Int)
+
+    /// 切れている間のプローブの結果から決める。応答を読み切れないもの（`unverified`）は、忙しいデーモンかもしれないので再接続を待つ。
+    init(probe: WebTabinalProbeResult, port: Int) {
+        switch probe {
+        case .daemon, .unverified: self = .reconnecting
+        case .notListening: self = .daemonStopped
+        case .foreign: self = .portInUse(port: port)
+        }
+    }
+
+    fileprivate var message: String {
+        switch self {
+        case .reconnecting:
+            "Disconnected from the webtabinal daemon. Reconnecting…"
+        case .daemonStopped:
+            "The webtabinal daemon is not running. Typing does not reach the terminal."
+        case .portInUse(let port):
+            "Another program is using port \(port), so Tabghostty cannot reach the webtabinal daemon."
+        case .rejected(let status):
+            "The webtabinal daemon rejected Tabghostty's token (HTTP \(status)). config.json may have changed."
+        }
+    }
+
+    /// ボタンの名前（ボタンを出さないなら nil）。
+    fileprivate var actionTitle: String? {
+        switch self {
+        case .reconnecting: nil
+        case .daemonStopped: "Start Daemon"
+        case .portInUse: "Retry"
+        case .rejected: "Reconnect"
+        }
+    }
+}
+
 /// デーモンとの接続が切れている間、ウィンドウの上に出す帯。切れている間はキー入力が端末に届かないことを知らせる。
-/// デーモンが止まっていると分かったら、起動するボタンを出す（勝手には起動しない。利用者が別のデーモンに
-/// 切り替えている途中かもしれないため）。
+/// 利用者が何かできるとき（デーモンが止まっている、トークンが拒否されたなど）は、ボタンを出す
+/// （勝手にはデーモンを起動しない。利用者が別のデーモンに切り替えている途中かもしれないため）。
 @MainActor
 final class ConnectionLostBannerView: NSVisualEffectView {
     private let label = NSTextField(labelWithString: "")
-    private let startButton = NSButton(title: "Start Daemon", target: nil, action: nil)
+    private let actionButton = NSButton(title: "", target: nil, action: nil)
     private let spinner = NSProgressIndicator()
-    var onStartDaemon: (() -> Void)?
+    private var onAction: (() -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -185,12 +231,12 @@ final class ConnectionLostBannerView: NSVisualEffectView {
         label.font = .systemFont(ofSize: NSFont.smallSystemFontSize + 1)
         label.textColor = .labelColor
         label.lineBreakMode = .byTruncatingTail
-        startButton.target = self
-        startButton.action = #selector(startDaemon)
-        startButton.bezelStyle = .rounded
-        startButton.controlSize = .small
+        actionButton.target = self
+        actionButton.action = #selector(performAction)
+        actionButton.bezelStyle = .rounded
+        actionButton.controlSize = .small
 
-        let stack = NSStackView(views: [spinner, label, startButton])
+        let stack = NSStackView(views: [spinner, label, actionButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 8
@@ -210,24 +256,27 @@ final class ConnectionLostBannerView: NSVisualEffectView {
         fatalError("init(coder:) is not supported")
     }
 
-    /// 出す。`daemonStopped` なら、デーモンが待ち受けていないことと、起動するボタンを出す。
-    func show(daemonStopped: Bool) {
-        if daemonStopped {
-            label.stringValue = "The webtabinal daemon is not running. Typing does not reach the terminal."
+    /// 出す。ボタンのある理由なら、押したときに `onAction` を一度だけ呼ぶ（もう一度出すまでは押せない）。
+    func show(_ reason: ConnectionLostReason, onAction: @escaping () -> Void) {
+        label.stringValue = reason.message
+        if let title = reason.actionTitle {
+            self.onAction = onAction
             spinner.stopAnimation(nil)
             spinner.isHidden = true
-            startButton.isHidden = false
-            startButton.isEnabled = true
+            actionButton.title = title
+            actionButton.isHidden = false
+            actionButton.isEnabled = true
         } else {
-            label.stringValue = "Disconnected from the webtabinal daemon. Reconnecting…"
+            self.onAction = nil
             spinner.isHidden = false
             spinner.startAnimation(nil)
-            startButton.isHidden = true
+            actionButton.isHidden = true
         }
         isHidden = false
     }
 
     func hide() {
+        onAction = nil
         spinner.stopAnimation(nil)
         isHidden = true
     }
@@ -235,11 +284,16 @@ final class ConnectionLostBannerView: NSVisualEffectView {
     /// 表示している文言（テスト用）。
     var message: String { isHidden ? "" : label.stringValue }
 
-    /// 起動するボタンを出しているか（テスト用）。
-    var showsStartButton: Bool { !isHidden && !startButton.isHidden }
+    /// 出しているボタンの名前（テスト用）。ボタンを出していなければ nil。
+    var actionTitle: String? { isHidden || actionButton.isHidden ? nil : actionButton.title }
 
-    @objc private func startDaemon() {
-        startButton.isEnabled = false
-        onStartDaemon?()
+    /// ボタンを押す（テスト用）。
+    func clickActionForTesting() {
+        actionButton.performClick(nil)
+    }
+
+    @objc private func performAction() {
+        actionButton.isEnabled = false
+        onAction?()
     }
 }

@@ -57,10 +57,15 @@ final class FakeSessionAPI: SessionAPI, @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: [String]())
     var calls: [String] { state.withLock { $0 } }
     var failMute = false
+    var failCreate = false
 
     private func record(_ call: String) { state.withLock { $0.append(call) } }
 
-    func createSession(cwd: String?) async throws -> SessionInfo { record("create"); return SessionInfo(id: "created") }
+    func createSession(cwd: String?) async throws -> SessionInfo {
+        record("create")
+        if failCreate { throw Failure() }
+        return SessionInfo(id: "created")
+    }
     func restartSession(id: String) async throws -> SessionInfo { record("restart:\(id)"); return SessionInfo(id: "restarted") }
     func duplicateSession(id: String) async throws -> SessionInfo { record("duplicate:\(id)"); return SessionInfo(id: "duplicated") }
     func deleteSession(id: String) async throws { record("delete:\(id)") }

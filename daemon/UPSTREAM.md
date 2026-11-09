@@ -35,6 +35,8 @@ git -C ../webtabinal archive <commit> go.mod go.sum LICENSE cmd internal tests/f
 | `internal/vtscreen/open_charm.go` | 既定のビルド（`//go:build !ghostty`）の `Open`、`ModelName`、`LibraryVersion` |
 | `internal/agentdetect/screens_test.go` | `-update-screens`（フィクスチャの最終画面。design D2） |
 | `internal/server/ws_binary.go`、`ws_binary_test.go` | バイナリフレーム（design D3） |
+| `internal/server/testdata/binary_frames.json` | バイナリフレームの基準のバイト列（Go と Swift のテストが同じものを読む） |
+| `internal/server/contract_test.go`、`testdata/probe_unauthorized.http` | トークン無しの `GET /api/config` への応答の記録（Swift のプローブのテストが、これをデーモンだと認めるかを確かめる） |
 | `tests/fixtures/agents/**/screen.txt`、`screen.meta.json` | `make screens` が生成する最終画面（取り込み直した後は `make screens` で作り直す） |
 
 ### 変更したファイル
@@ -46,7 +48,7 @@ Go のファイルで変更した箇所には、`Tabghostty` と書いたコメ�
 | `go.mod`、`go.sum` | `go.mitchellh.com/libghostty v0.0.0-20261107144202-b13f277ddcb2` を追加する |
 | `internal/vtscreen/adapter.go` | `Open` を `openCharm` に改名する（ビルドタグで `Open` を選ぶため） |
 | `internal/vtscreen/adapter_test.go` | charmbracelet の内部を調べる 2 つのテストを、ghostty のビルドでは skip する |
-| `internal/server/ws.go` | `clientMsg.Binary`、`wsClient.binary`、attach での記録、replay と output と attach 中の出力のバイナリ送信、`send` から `sendBytes` を分ける、`writeClient` でメッセージの種類を選ぶ |
+| `internal/server/ws.go` | `clientMsg.Binary`、`wsClient.binary`、attach での記録、replay と output と attach 中の出力のバイナリ送信（replay は 1 MiB ずつ。replay と attach 中の出力は、送信キューが半分まで空くのを待ってから積む）、`send` から `sendBytes` を分ける、`writeClient` でメッセージの種類を選ぶ |
 
 ## 取り込み元から引き継いだ既知の問題
 
@@ -66,4 +68,7 @@ Go のファイルで変更した箇所には、`Tabghostty` と書いたコメ�
 4. この表の「コミット」と「取り込んだ日」を更新する。
 5. 次を実行して確認する。
    - `make daemon-test`
+     - `TestUnauthorizedProbeResponseMatchesTheRecordedContract` が失敗したら（トークン無しの応答が変わった）、
+       `cd daemon && go test ./internal/server -run TestUnauthorizedProbeResponseMatchesTheRecordedContract -update-contract` で記録し直す。
+       その後の `make test` で、プローブがまだ同梱のデーモンを認めるかが分かる。
    - `make screens` と `make fixtures` を実行してから、`make test`（一致検証）

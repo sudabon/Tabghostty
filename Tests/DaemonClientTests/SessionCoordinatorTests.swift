@@ -405,4 +405,37 @@ final class MockSessionAPI: SessionAPI, @unchecked Sendable {
         #expect(api.calls.withLock { $0 }.isEmpty)
         #expect(coordinator.activeController == nil)
     }
+
+    // 起動した直後にデーモンへつながらないときも、つながっていないことを画面に知らせる（切断の帯を出すため）。
+    @Test func aFailedFirstConnectionIsReportedAsDisconnected() async throws {
+        let server = try MockWebSocketServer()
+        server.rejectionStatus = 503
+        try await server.start()
+        defer { server.stop() }
+        let coordinator = makeCoordinator(port: server.port)
+        var changes: [Bool] = []
+        coordinator.onConnectionChange = { changes.append($0) }
+        await coordinator.start()
+        defer { Task { await coordinator.stop() } }
+
+        #expect(await waitUntil { server.handshakeHeaders.count >= 3 })
+        #expect(changes == [false])
+        #expect(!coordinator.isConnected)
+    }
+
+    // デーモンがトークンを拒否したら、その HTTP ステータスを画面に知らせる（config.json を読み直すボタンを出すため）。
+    @Test func aRejectedConnectionIsReported() async throws {
+        let server = try MockWebSocketServer()
+        server.rejectionStatus = 401
+        try await server.start()
+        defer { server.stop() }
+        let coordinator = makeCoordinator(port: server.port)
+        var rejections: [Int] = []
+        coordinator.onConnectionRejected = { rejections.append($0) }
+        await coordinator.start()
+        defer { Task { await coordinator.stop() } }
+
+        #expect(await waitUntil { server.handshakeHeaders.count >= 3 })
+        #expect(rejections == [401])
+    }
 }

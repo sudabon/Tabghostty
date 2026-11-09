@@ -165,8 +165,8 @@ func (h *Hub) handleClient(c *wsClient, msg clientMsg) {
 		}
 		buf := s.Ring.Bytes()
 		const chunk = 24 * 1024
-		if c.usesBinary(msg.SID) { // Tabghostty: binary frames (ws_binary.go)
-			h.sendReplayBinary(c, msg.SID, buf, chunk)
+		if c.usesBinary(msg.SID) { // Tabghostty: binary frames, larger chunks (ws_binary.go)
+			h.sendReplayBinary(c, msg.SID, buf, binaryReplayChunk)
 		} else if len(buf) == 0 {
 			h.send(c, map[string]any{"t": "replay", "sid": msg.SID, "data": "", "done": true})
 		} else {
@@ -275,7 +275,10 @@ func (h *Hub) flushAttachPending(c *wsClient, sid string) (overflowed bool) {
 		}
 		c.mu.Unlock()
 		for _, data := range pending {
-			if c.usesBinary(sid) { // Tabghostty: binary frames (ws_binary.go)
+			if c.usesBinary(sid) { // Tabghostty: binary frames, waiting for room in the queue (ws_binary.go)
+				if !waitForSendRoom(c) {
+					return false
+				}
 				h.sendOutputBinary(c, sid, data)
 				continue
 			}

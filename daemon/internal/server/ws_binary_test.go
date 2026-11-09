@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,14 +20,45 @@ import (
 	"github.com/sudabon/webtabinal/internal/session"
 )
 
-// goldenBinaryFrame is also decoded by Tabghostty's Tests/DaemonClientTests/BinaryFrameTests.swift,
-// so the Go encoder and the Swift decoder agree byte for byte.
-const goldenBinaryFrame = "032431323365343536372d653839622d313264332d613435362d3432363631343137343030301b5b33316de697a5e69cac1b5b306d0d0a"
+// binaryFrameVector is one entry of testdata/binary_frames.json. Tabghostty's
+// Tests/DaemonClientTests/BinaryFrameTests.swift decodes the same vectors, so the Go encoder
+// and the Swift decoder agree byte for byte.
+type binaryFrameVector struct {
+	Name       string `json:"name"`
+	Kind       byte   `json:"kind"`
+	SID        string `json:"sid"`
+	PayloadHex string `json:"payload_hex"`
+	FrameHex   string `json:"frame_hex"`
+}
 
-func TestBinaryFrameMatchesGoldenVector(t *testing.T) {
-	got := binaryFrame(binaryKindReplayDone, "123e4567-e89b-12d3-a456-426614174000", []byte("\x1b[31m日本\x1b[0m\r\n"))
-	if hex.EncodeToString(got) != goldenBinaryFrame {
-		t.Fatalf("frame = %x\nwant    %s", got, goldenBinaryFrame)
+func TestBinaryFramesMatchTheSharedVectors(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "binary_frames.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors []binaryFrameVector
+	if err := json.Unmarshal(data, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[byte]bool{}
+	for _, v := range vectors {
+		payload, err := hex.DecodeString(v.PayloadHex)
+		if err != nil {
+			t.Fatalf("%s: %v", v.Name, err)
+		}
+		if !binarySID(v.SID) {
+			t.Errorf("%s: sid %q cannot be sent in a binary frame", v.Name, v.SID)
+		}
+		if got := hex.EncodeToString(binaryFrame(v.Kind, v.SID, payload)); got != v.FrameHex {
+			t.Errorf("%s: frame = %s\nwant      %s", v.Name, got, v.FrameHex)
+		}
+		kinds[v.Kind] = true
+	}
+	// Every kind the encoder uses has a vector (a renumbered kind fails here).
+	for _, kind := range []byte{binaryKindOutput, binaryKindReplay, binaryKindReplayDone} {
+		if !kinds[kind] {
+			t.Errorf("no shared vector for kind %#x", kind)
+		}
 	}
 }
 
@@ -248,5 +281,151 @@ func TestWriteClientSendsBinaryAndTextMessages(t *testing.T) {
 	mt, data, err = clientConn.ReadMessage()
 	if err != nil || mt != websocket.TextMessage || !strings.Contains(string(data), `"state"`) {
 		t.Fatalf("second message = %d %s %v", mt, data, err)
+	}
+}
+
+// Tabghostty attaches every listed session back to back on launch and on every reconnect
+// (SessionCoordinator), unlike the web client, which attaches one session at a time. With full
+// rings, the binary replays must still fit in the client's send queue; otherwise the client is
+// disconnected, reconnects, attaches everything again and is disconnected again, forever.
+func TestAttachingManyFullRingsDoesNotOverflowTheSendQueue(t *testing.T) {
+	store := testConfigStore(t)
+	mgr := session.NewManager(store, log.New(io.Discard, "", 0))
+	t.Cleanup(mgr.Close)
+	h := NewHub(mgr, store, log.New(io.Discard, "", 0))
+	const sessions = 4
+	var ids []string
+	for i := 0; i < sessions; i++ {
+		s, err := mgr.Create(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Ring.Write(bytes.Repeat([]byte("x"), 5*1024*1024)) // the default ring size
+		ids = append(ids, s.ID)
+	}
+
+	serverConn, clientConn := newSocketPair(t)
+	replayDone := countReplayDone(clientConn, sessions)
+
+	c := newTestClient(nil)
+	c.conn = serverConn
+	go h.writeClient(c)
+	defer h.disconnect(c)
+	for _, id := range ids {
+		h.handleClient(c, clientMsg{T: "attach", SID: id, Binary: true})
+	}
+
+	deadline := time.After(10 * time.Second)
+	for got := 0; got < sessions; got++ {
+		select {
+		case <-replayDone:
+		case <-c.quit:
+			t.Fatalf("the client was disconnected after %d of %d replays", got, sessions)
+		case <-deadline:
+			t.Fatalf("only %d of %d replays completed", got, sessions)
+		}
+	}
+}
+
+// A replay with more chunks than the send queue holds waits for the writer instead of
+// overflowing the queue (which disconnects the client).
+func TestReplayWaitsForRoomInTheSendQueue(t *testing.T) {
+	serverConn, clientConn := newSocketPair(t)
+	replayDone := countReplayDone(clientConn, 1)
+	c := newTestClient(nil)
+	c.conn = serverConn
+	h := &Hub{clients: map[*wsClient]struct{}{}}
+	go h.writeClient(c)
+	defer h.disconnect(c)
+
+	h.sendReplayBinary(c, "s", bytes.Repeat([]byte("y"), 1024*1024), 1024) // 1,024 chunks, four times the queue
+
+	select {
+	case <-replayDone:
+	case <-c.quit:
+		t.Fatal("the client was disconnected while the replay was queued")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the replay never completed")
+	}
+}
+
+// newSocketPair returns the server and client ends of a real WebSocket connection.
+func newSocketPair(t *testing.T) (server, client *websocket.Conn) {
+	t.Helper()
+	serverConn := make(chan *websocket.Conn, 1)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		serverConn <- conn
+	}))
+	t.Cleanup(httpServer.Close)
+	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return <-serverConn, client
+}
+
+// countReplayDone reads the client end until it fails and signals each final replay chunk (0x03).
+func countReplayDone(client *websocket.Conn, capacity int) <-chan struct{} {
+	done := make(chan struct{}, capacity)
+	go func() {
+		for {
+			mt, data, err := client.ReadMessage()
+			if err != nil {
+				return
+			}
+			if mt == websocket.BinaryMessage && len(data) > 0 && data[0] == binaryKindReplayDone {
+				done <- struct{}{}
+			}
+		}
+	}()
+	return done
+}
+
+// Output buffered during a replay is flushed on the client's read goroutine too; a long
+// backlog of small binary outputs waits for the writer instead of overflowing the queue.
+func TestFlushedBinaryOutputWaitsForRoomInTheSendQueue(t *testing.T) {
+	serverConn, clientConn := newSocketPair(t)
+	outputs := make(chan struct{}, 1024)
+	go func() {
+		for {
+			mt, data, err := clientConn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if mt == websocket.BinaryMessage && data[0] == binaryKindOutput {
+				outputs <- struct{}{}
+			}
+		}
+	}()
+	c := newTestClient(map[string]bool{"s": true}, "s")
+	c.conn = serverConn
+	c.replaying["s"] = true
+	for i := 0; i < 1024; i++ { // four times the queue
+		c.pending["s"] = append(c.pending["s"], []byte("o"))
+	}
+	c.pendingBytes["s"] = 1024
+	h := &Hub{clients: map[*wsClient]struct{}{}}
+	go h.writeClient(c)
+	defer h.disconnect(c)
+
+	if h.flushAttachPending(c, "s") {
+		t.Fatal("unexpected overflow")
+	}
+
+	deadline := time.After(10 * time.Second)
+	for got := 0; got < 1024; got++ {
+		select {
+		case <-outputs:
+		case <-c.quit:
+			t.Fatalf("the client was disconnected after %d of 1024 outputs", got)
+		case <-deadline:
+			t.Fatalf("only %d of 1024 outputs arrived", got)
+		}
 	}
 }

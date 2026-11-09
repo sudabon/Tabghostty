@@ -7,6 +7,8 @@ import TerminalCore
 /// - 接続要求に `Authorization: Bearer` を付け、`Origin` は付けない（spec: daemon-connection「Authenticated requests」）。
 /// - 受信ループは止めずに回し、デコードしたフレームを順にハンドラへ渡す（design D4）。
 /// - 切断したら `min(500·2^n, 5000)` ms 待って再接続し、接続できたら n を 0 に戻す。
+/// - つながっていない状態になったら `disconnected` を 1 回だけ知らせる（最初の接続に失敗したときも）。
+///   デーモンがトークンを拒否したら（HTTP 401 / 403）、`rejected` も 1 回だけ知らせる。
 /// - 送信は `enqueue` で同期的にキューへ積む。切断中は積まずに捨てる（spec: terminal-input）。
 public actor WSConnection: TerminalFrameSink {
     public enum Event: Sendable, Equatable {
@@ -14,6 +16,8 @@ public actor WSConnection: TerminalFrameSink {
         case connected
         /// 接続が切れた。この後、待ってから再接続する。
         case disconnected
+        /// デーモンが接続要求を拒否した（HTTP 401 / 403）。
+        case rejected(status: Int)
         case frame(ServerFrame)
     }
 
@@ -94,6 +98,10 @@ public actor WSConnection: TerminalFrameSink {
 
     private func run(handler: @escaping Handler) async {
         var failures = 0
+        // つながっていないこと・拒否されたことを知らせたか。続けて失敗している間は、最初の 1 回だけ知らせる
+        // （最初の接続に失敗したときも知らせる。知らせないと、つながらないまま何も表示されない）。
+        var reportedDisconnected = false
+        var reportedRejection = false
         while !Task.isCancelled {
             let task = session.webSocketTask(with: makeRequest())
             // replay のチャンク（base64 で約 33 KB）や大きな output を受けられるようにする。
@@ -103,6 +111,7 @@ public actor WSConnection: TerminalFrameSink {
 
             if opened && !Task.isCancelled {
                 failures = 0
+                reportedRejection = false
                 let sender = openOutbox(for: task)
                 await handler(.connected)
                 await receiveLoop(task, handler: handler)
@@ -110,15 +119,27 @@ public actor WSConnection: TerminalFrameSink {
                 sender.cancel()
                 task.cancel(with: .goingAway, reason: nil)
                 await handler(.disconnected)
+                reportedDisconnected = true
             } else {
                 // 続けて失敗している間は、最初の 1 回だけ error で残す（5 秒ごとに同じログを出さない）。
-                let status = (task.response as? HTTPURLResponse).map { " (HTTP \($0.statusCode))" } ?? ""
+                let statusCode = (task.response as? HTTPURLResponse)?.statusCode
+                let status = statusCode.map { " (HTTP \($0))" } ?? ""
                 if failures == 0 {
                     Self.log.error("cannot connect to the daemon on port \(self.port, privacy: .public)\(status, privacy: .public); retrying")
                 } else {
                     Self.log.debug("reconnect attempt \(failures, privacy: .public) failed\(status, privacy: .public)")
                 }
                 task.cancel()
+                if !Task.isCancelled {
+                    if !reportedDisconnected {
+                        reportedDisconnected = true
+                        await handler(.disconnected)
+                    }
+                    if let statusCode, statusCode == 401 || statusCode == 403, !reportedRejection {
+                        reportedRejection = true
+                        await handler(.rejected(status: statusCode))
+                    }
+                }
             }
             currentTask = nil
             if Task.isCancelled { break }

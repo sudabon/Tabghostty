@@ -161,6 +161,8 @@ final class MockWebSocketServer: @unchecked Sendable {
         var received: [String] = []
         var connections: [NWConnection] = []
         var connectCount = 0
+        /// nil でなければ、接続要求をこの HTTP ステータスで断る（デーモンがトークンを拒否したときなど）。
+        var rejectionStatus: Int?
     }
 
     /// WebSocket を話す本体（`NWProtocolWebSocket`）。
@@ -180,6 +182,12 @@ final class MockWebSocketServer: @unchecked Sendable {
     var handshakeHeaders: [[String: String]] { state.withLock { $0.handshakeHeaders } }
     var received: [String] { state.withLock { $0.received } }
     var connectCount: Int { state.withLock { $0.connectCount } }
+
+    /// 接続要求を断る HTTP ステータス（nil なら受け入れる）。
+    var rejectionStatus: Int? {
+        get { state.withLock { $0.rejectionStatus } }
+        set { state.withLock { $0.rejectionStatus = newValue } }
+    }
 
     /// 受け取ったフレームの `t` の値（順番どおり）。
     var receivedTypes: [String] {
@@ -299,7 +307,17 @@ final class MockWebSocketServer: @unchecked Sendable {
             if let separator = buffer.range(of: Data("\r\n\r\n".utf8)) {
                 let head = String(decoding: buffer[..<separator.lowerBound], as: UTF8.self)
                 let headers = Self.parseHeaders(head)
-                self.state.withLock { $0.handshakeHeaders.append(headers) }
+                let rejection = self.state.withLock { state -> Int? in
+                    state.handshakeHeaders.append(headers)
+                    return state.rejectionStatus
+                }
+                if let rejection {
+                    let body = "unauthorized\n"
+                    let response = "HTTP/1.1 \(rejection) Rejected\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                    client.send(content: Data(response.utf8), completion: .contentProcessed { _ in client.cancel() })
+                    backend.cancel()
+                    return
+                }
                 backend.send(content: buffer, completion: .idempotent)
                 self.pump(from: client, to: backend)
                 self.pump(from: backend, to: client)

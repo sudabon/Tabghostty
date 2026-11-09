@@ -200,13 +200,14 @@ import Testing
         defer { Task { await coordinator.stop() } }
         #expect(await waitUntil { await self.screen(coordinator, "s1") == "I am s1" })
 
+        // 作ったセッションは、デーモンの `sessions` で一覧に入ったときにアクティブになる。
         await coordinator.createSession()
-        #expect(coordinator.store.activeSessionID == "new")
+        #expect(await waitUntil { await MainActor.run { coordinator.store.activeSessionID == "new" } })
         #expect(await waitUntil { await MainActor.run { coordinator.activeController?.sid == "new" } })
         #expect(await waitUntil { await self.screen(coordinator, "new") == "I am new" })
 
         await coordinator.duplicateSession("s1")
-        #expect(coordinator.store.activeSessionID == "dup")
+        #expect(await waitUntil { await MainActor.run { coordinator.store.activeSessionID == "dup" } })
         #expect(await waitUntil { await MainActor.run { coordinator.activeController?.sid == "dup" } })
 
         // 実行中・idle のセッションは再起動しない。
@@ -214,7 +215,7 @@ import Testing
         #expect(!api.recorded.contains("restart:s1"))
 
         await coordinator.restartSession("dead")
-        #expect(coordinator.store.activeSessionID == "re")
+        #expect(await waitUntil { await MainActor.run { coordinator.store.activeSessionID == "re" } })
         #expect(await waitUntil { await MainActor.run { coordinator.activeController?.sid == "re" } })
         #expect(api.recorded == ["create", "duplicate:s1", "restart:dead"])
         // タブの一覧は、デーモンの `sessions` でだけ変わる。

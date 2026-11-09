@@ -17,6 +17,8 @@
 package server
 
 import (
+	"time"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -25,6 +27,11 @@ const (
 	binaryKindReplay     byte = 0x02
 	binaryKindReplayDone byte = 0x03
 )
+
+// binaryReplayChunk is the replay chunk size for binary frames. They carry raw bytes (no
+// base64) and Tabghostty accepts messages up to 16 MiB, so a full 5 MiB ring is 5 frames
+// instead of the 214 that the JSON path's 24 KiB chunks need.
+const binaryReplayChunk = 1 << 20
 
 // binarySID reports whether sid fits the binary frame header (ASCII, 1–255 bytes).
 func binarySID(sid string) bool {
@@ -73,6 +80,11 @@ func (c *wsClient) usesBinary(sid string) bool {
 
 // sendReplayBinary sends the ring contents as 0x02 chunks ending with a 0x03 chunk.
 // An empty ring is a single empty 0x03 message.
+//
+// It runs on the client's read goroutine (attach) and waits for room in the send queue
+// before each chunk (waitForSendRoom). Tabghostty attaches every session back to back on
+// launch and on each reconnect, and without the wait the replays of a few full rings
+// overflow the queue, which disconnects the client.
 func (h *Hub) sendReplayBinary(c *wsClient, sid string, buf []byte, chunk int) {
 	if len(buf) == 0 {
 		h.sendBytes(c, binaryFrame(binaryKindReplayDone, sid, nil))
@@ -87,8 +99,26 @@ func (h *Hub) sendReplayBinary(c *wsClient, sid string, buf []byte, chunk int) {
 		if end >= len(buf) {
 			kind = binaryKindReplayDone
 		}
+		if !waitForSendRoom(c) {
+			return
+		}
 		h.sendBytes(c, binaryFrame(kind, sid, buf[i:end]))
 	}
+}
+
+// waitForSendRoom blocks until c's send queue is at most half full, leaving the other half
+// for frames that other goroutines enqueue without waiting (output, state, sessions). Only
+// the client's own read goroutine may call it. It returns false once c is disconnected;
+// writeClient disconnects a client that stops reading when its write deadline passes.
+func waitForSendRoom(c *wsClient) bool {
+	for len(c.send) > cap(c.send)/2 {
+		select {
+		case <-c.quit:
+			return false
+		case <-time.After(time.Millisecond):
+		}
+	}
+	return true
 }
 
 // sendOutputBinary sends live output as a 0x01 message.

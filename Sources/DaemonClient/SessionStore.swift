@@ -36,6 +36,8 @@ public final class SessionStore {
     public private(set) var sessions: [SessionInfo] = []
     /// アクティブセッションの ID。無ければ nil。
     public private(set) var activeSessionID: String?
+    /// アクティブにする予定の、まだ一覧に無いセッション（作った直後など）。一覧に入ったときにアクティブになる。
+    private var pendingActivationID: String?
     /// 起動してから `sessions` フレームを 1 度でも受け取ったか。
     public private(set) var hasReceivedSessions = false
     /// `sessions` フレームを受け取るたびに増える（再接続の後に、新しい一覧が届いたかを見分ける）。
@@ -106,10 +108,18 @@ public final class SessionStore {
         onChange?()
     }
 
-    /// 指定したセッションをアクティブにする（起動時に作った・再起動したセッションなど）。
-    /// まだ一覧に無くてもよい（次の `sessions` フレームで一覧に入る）。
+    /// 指定したセッションをアクティブにする（タブを選んだ、作った・複製した・再起動したなど）。
+    ///
+    /// まだ一覧に無いセッション（作った直後）は、一覧に入ったときにアクティブにし、それまでは今のアクティブセッションを保つ。
+    /// REST の応答と `sessions` フレームは別の接続で届くので、作る前の一覧が応答の後に届くことがある。
+    /// そのような一覧を受け取っても、アクティブにする予定は残す。
     public func activate(_ id: String) {
-        activeSessionID = id
+        if sessions.contains(where: { $0.id == id }) {
+            pendingActivationID = nil
+            activeSessionID = id
+        } else {
+            pendingActivationID = id
+        }
         onChange?()
     }
 
@@ -125,8 +135,14 @@ public final class SessionStore {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// 一覧に残っていればそのまま、無ければ先頭（空なら無し）にする。
+    /// アクティブにする予定のセッションが一覧に入ればそれに、そうでなければ今のものが一覧に残っていればそのまま、
+    /// 無ければ先頭（空なら無し）にする。
     private func selectActiveAfterListChange() {
+        if let pendingActivationID, sessions.contains(where: { $0.id == pendingActivationID }) {
+            self.pendingActivationID = nil
+            activeSessionID = pendingActivationID
+            return
+        }
         if let activeSessionID, sessions.contains(where: { $0.id == activeSessionID }) {
             return
         }

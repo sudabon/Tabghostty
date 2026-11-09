@@ -154,6 +154,44 @@ import TerminalCore
         #expect(server.connectCount == 3)
     }
 
+    // 最初の接続に失敗したときも、つながっていないことを知らせる（再試行のたびには知らせない）。
+    // 知らせないと、起動した直後にデーモンへつながらないとき、空のウィンドウのまま何も出ない。
+    @Test func aFailedFirstConnectionIsReportedOnce() async throws {
+        let server = try MockWebSocketServer()
+        server.rejectionStatus = 503
+        try await server.start()
+        defer { server.stop() }
+
+        let log = EventLog()
+        let connection = WSConnection(port: server.port, token: token, sleep: { _ in try await Task.sleep(for: .milliseconds(10)) })
+        await connection.start { log.append($0) }
+        defer { Task { await connection.stop() } }
+
+        #expect(await waitUntil { server.handshakeHeaders.count >= 3 })
+        #expect(log.all == [.disconnected])
+        server.rejectionStatus = nil
+        #expect(await waitUntil { log.count(.connected) == 1 })
+        #expect(log.all == [.disconnected, .connected])
+    }
+
+    // デーモンがトークンを拒否したら（config.json が作り直されたなど）、拒否されたことを 1 回だけ知らせる。
+    // 再試行しても同じトークンでは通らないので、利用者に config.json を読み直してもらう必要がある。
+    @Test(arguments: [401, 403])
+    func aRejectedConnectionIsReported(status: Int) async throws {
+        let server = try MockWebSocketServer()
+        server.rejectionStatus = status
+        try await server.start()
+        defer { server.stop() }
+
+        let log = EventLog()
+        let connection = WSConnection(port: server.port, token: token, sleep: { _ in try await Task.sleep(for: .milliseconds(10)) })
+        await connection.start { log.append($0) }
+        defer { Task { await connection.stop() } }
+
+        #expect(await waitUntil { server.handshakeHeaders.count >= 3 })
+        #expect(log.all == [.disconnected, .rejected(status: status)])
+    }
+
     // Scenario: Idle connection stays open（デーモンの ping に pong を返す）
     @Test func answersServerPings() async throws {
         let server = try MockWebSocketServer()

@@ -197,6 +197,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
             }
             everConnected = true
         }
+        coordinator.onConnectionRejected = { [weak self] status in
+            self?.connectionWasRejected(status: status)
+        }
         shell.onTransientMessage = { [weak self] message in
             self?.windowController?.showToast(message)
         }
@@ -229,7 +232,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
     // MARK: - 接続が切れたとき
 
     /// 切れたら帯を出し、つながったら消す。切れている間は、デーモンが待ち受けているかを確かめ、
-    /// 止まっていれば起動するボタンを出す（押すと、起動の手順をやり直す）。
+    /// 止まっている・ほかのプログラムがポートを使っているなら、ボタンを出す（押すと、起動の手順をやり直す）。
     private func connectionDidChange(_ connected: Bool, port: Int) {
         connectionWatchTask?.cancel()
         connectionWatchTask = nil
@@ -238,17 +241,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValid
             return
         }
         let restart: () -> Void = { [weak self] in self?.startup() }
-        windowController?.showConnectionLost(daemonStopped: false, onStartDaemon: restart)
+        windowController?.showConnectionLost(.reconnecting, onAction: restart)
         connectionWatchTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.connectionWatchInterval)
                 guard !Task.isCancelled else { return }
-                // プローブは同期で最大 300 ms ブロックするので、メインスレッドの外で行う。
+                // プローブは送受信ごとに 300 ms のタイムアウトで同期的にブロックするので、メインスレッドの外で行う。
                 let result = await Task.detached { probeWebTabinal(port: port) }.value
                 guard !Task.isCancelled else { return }
-                self?.windowController?.showConnectionLost(daemonStopped: result == .notListening, onStartDaemon: restart)
+                self?.windowController?.showConnectionLost(ConnectionLostReason(probe: result, port: port), onAction: restart)
             }
         }
+    }
+
+    /// デーモンがトークンを拒否した: 再接続しても通らないので、プローブをやめ、config.json を読み直してつなぎ直すボタンを出す。
+    private func connectionWasRejected(status: Int) {
+        connectionWatchTask?.cancel()
+        connectionWatchTask = nil
+        windowController?.showConnectionLost(.rejected(status: status)) { [weak self] in self?.startup() }
     }
 
     // MARK: - 通知のクリック（spec: notifications「Delivery and activation」、phase4 design D2）

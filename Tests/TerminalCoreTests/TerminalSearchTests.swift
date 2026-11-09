@@ -127,7 +127,10 @@ import Testing
         controller.setSearchObserver { status in received.withLock { $0.append(status) } }
         await controller.receiveOutput(bytes("found again\r\nfound\r\n"))
         #expect(received.withLock { $0 }.isEmpty)
-        try await Task.sleep(for: TerminalController.researchDelay + .milliseconds(150))
+        // 時間は決め打ちで待たず、届くまで待つ（CI の負荷で遅れても落ちない）。
+        for _ in 0..<400 where received.withLock({ $0.isEmpty }) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         #expect(received.withLock { $0 }.last == SearchStatus(query: "found", total: 3, current: 0))
     }
 
@@ -156,13 +159,15 @@ import Testing
         await controller.setViewGrid(.init(cols: 80, rows: 5, cellWidthPx: 16, cellHeightPx: 34))
         let snapshot = try #require(await controller.makeSnapshot(forceFull: true))
         #expect(snapshot.cols == 80)
-        for highlight in snapshot.searchHighlights.values.flatMap({ $0 }) {
-            #expect(highlight.columns.upperBound < 80)
-        }
-        // 一致はリサイズの後の位置で取り直している。
-        if let match = await controller.currentSearchMatch {
-            #expect(match.startColumn < 80)
-        }
+        // 一致はリサイズの後の位置で取り直している（103 文字の行は 80 列で折り返し、foo は次の行の 20〜22 列）。
+        #expect(await controller.searchStatus.total == 1)
+        let match = try #require(await controller.currentSearchMatch)
+        #expect(match.startColumn == 20)
+        #expect(match.endColumn == 22)
+        // 強調は 1 つだけで、折り返した後の foo を今の一致として塗る。
+        let highlights = snapshot.searchHighlights.values.flatMap { $0 }
+        #expect(highlights.map(\.columns) == [20...22])
+        #expect(highlights.map(\.isCurrent) == [true])
     }
 
     @Test func endingTheSearchClearsTheHighlights() async throws {

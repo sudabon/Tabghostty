@@ -134,6 +134,44 @@ import TerminalCore
     }
 
     // Scenario: Cancel composition
+    // IME が確定してから、そのキーをコマンドとして返す（韓国語の入力の Return など）: 確定した文字列の後に、そのキーを送る。
+    @Test func aKeyPassedBackAfterTheIMECommitsIsSentAfterTheText() async throws {
+        let fixture = try await makeFixture()
+        let view = fixture.view
+        view.setMarkedText("하", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.keyEventInterpreter = { [unowned view] _ in
+            view.insertText("한", replacementRange: NSRange(location: NSNotFound, length: 0))
+            view.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        }
+        view.keyDown(with: key("\r", keyCode: 0x24))
+        #expect(try await waitForInput(fixture.sink) == Array("한\r".utf8))
+    }
+
+    // 変換を確定する Return（日本語の入力）: IME はキーを返さないので、確定した文字列だけを送る（改行は送らない）。
+    @Test func aReturnThatOnlyCommitsTheConversionSendsOnlyTheText() async throws {
+        let fixture = try await makeFixture()
+        let view = fixture.view
+        view.setMarkedText("日本語", selectedRange: NSRange(location: 0, length: 3), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.keyEventInterpreter = { [unowned view] _ in
+            view.insertText("日本語", replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+        view.keyDown(with: key("\r", keyCode: 0x24))
+        #expect(try await waitForInput(fixture.sink) == Array("日本語".utf8))
+    }
+
+    // IME がキーを返しても、まだ変換中なら送らない（IME の中で使われたキー）。
+    @Test func aKeyPassedBackWhileStillComposingIsNotSent() async throws {
+        let fixture = try await makeFixture()
+        let view = fixture.view
+        view.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.keyEventInterpreter = { [unowned view] _ in
+            view.doCommand(by: #selector(NSResponder.moveDown(_:)))
+        }
+        view.keyDown(with: key("\u{F701}", keyCode: 0x7D))
+        #expect(try await sentInput(fixture.sink).isEmpty)
+        #expect(view.hasMarkedText())
+    }
+
     @Test func cancelledCompositionSendsNothing() async throws {
         let fixture = try await makeFixture()
         fixture.view.setMarkedText("にほ", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))

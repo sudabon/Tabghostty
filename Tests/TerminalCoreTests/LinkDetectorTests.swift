@@ -38,6 +38,20 @@ import Testing
         #expect(urls("[https://example.com/arr[0]]") == ["https://example.com/arr[0]"])
     }
 
+    // 日本語の文中: かなや漢字の直後でも URL は始まり、全角の約物・括弧・引用符で終わる。
+    @Test func japaneseTextAroundURLs() {
+        #expect(urls("詳細はhttps://example.com/docs") == ["https://example.com/docs"])
+        #expect(urls("（https://example.com/x）を参照") == ["https://example.com/x"])
+        #expect(urls("参照：https://example.com/y。次へ") == ["https://example.com/y"])
+        #expect(urls("https://a.example、https://b.example") == ["https://a.example", "https://b.example"])
+        #expect(urls("「https://example.com/q」と『https://example.com/r』") == ["https://example.com/q", "https://example.com/r"])
+        #expect(urls("【https://example.com/s】") == ["https://example.com/s"])
+        // パスの中の日本語は URL に含める。
+        #expect(urls("https://ja.wikipedia.org/wiki/日本 を参照") == ["https://ja.wikipedia.org/wiki/日本"])
+        // 英数字の直後は、これまでどおり URL の始まりにしない。
+        #expect(urls("xhttps://example.com 1https://example.com") == [])
+    }
+
     @Test func onlyHTTPAndHTTPSAreOpenable() {
         #expect(LinkDetector.isOpenable("https://example.com"))
         #expect(LinkDetector.isOpenable("HTTP://example.com/x"))
@@ -73,6 +87,22 @@ import Testing
         // URL の外のセル。
         #expect(LinkDetector.plainLink(at: GridPoint(x: 1, y: 0), rows: rows, wrapped: [false]) == nil)
         #expect(LinkDetector.plainLink(at: GridPoint(x: 28, y: 0), rows: rows, wrapped: [false]) == nil)
+    }
+
+    // 全角文字の後ろの URL: 列は 2 セル幅の文字の分だけずれる。全角文字（右半分を含む）を指しても URL ではない。
+    @Test func plainLinkAfterWideCharacters() async throws {
+        let controller = try TerminalController(sid: "s1", cols: 30, rows: 2, maxScrollback: 0, colors: nil, sink: RecordingSink())
+        await controller.attach()
+        await controller.receiveReplay(bytes("日本語 https://e.example/x"), done: true)
+        let snapshot = try #require(await controller.makeSnapshot(forceFull: true))
+        let rows = snapshot.dirtyRows.sorted { $0.y < $1.y }.map(\.cells)
+        let wrapped = [false, false]
+        let link = try #require(LinkDetector.plainLink(at: GridPoint(x: 10, y: 0), rows: rows, wrapped: wrapped))
+        #expect(link.url == "https://e.example/x")
+        #expect(link.spans == [LinkSpan(row: 0, columns: 7...25)])
+        #expect(LinkDetector.plainLink(at: GridPoint(x: 7, y: 0), rows: rows, wrapped: wrapped) == link)
+        #expect(LinkDetector.plainLink(at: GridPoint(x: 1, y: 0), rows: rows, wrapped: wrapped) == nil)
+        #expect(LinkDetector.plainLink(at: GridPoint(x: 6, y: 0), rows: rows, wrapped: wrapped) == nil)
     }
 
     // 折り返した URL は、前後の行とつないで 1 つのリンクにする（どちらの行から指しても同じ）。

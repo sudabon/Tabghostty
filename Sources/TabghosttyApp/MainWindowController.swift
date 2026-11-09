@@ -118,14 +118,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         toast.show(message)
     }
 
-    /// デーモンとの接続が切れていることを出す。`daemonStopped` なら、デーモンを起動するボタンも出す。
-    func showConnectionLost(daemonStopped: Bool, onStartDaemon: @escaping () -> Void) {
-        connectionBanner.onStartDaemon = onStartDaemon
-        connectionBanner.show(daemonStopped: daemonStopped)
+    /// デーモンとの接続が切れていることを、その理由とともに出す（ボタンのある理由なら、押すと `onAction` を呼ぶ）。
+    func showConnectionLost(_ reason: ConnectionLostReason, onAction: @escaping () -> Void) {
+        connectionBanner.show(reason, onAction: onAction)
     }
 
     func hideConnectionLost() {
-        connectionBanner.onStartDaemon = nil
         connectionBanner.hide()
     }
 

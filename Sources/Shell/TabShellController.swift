@@ -145,6 +145,11 @@ public final class TabShellController {
         coordinator.onActiveControllerChange = { [weak self] controller in
             self?.terminalView.controller = controller
         }
+        coordinator.onStartupSessionFailure = { [weak self] in
+            // 作れなかったことはトーストで知らせる。消えた後も空の画面のままにせず、作り直せる「新規タブ」を出す。
+            guard let self, self.coordinator.store.sessions.isEmpty else { return }
+            self.terminalArea.isEmptyStateVisible = true
+        }
         coordinator.store.onChange = { [weak self] in self?.storeDidChange() }
         coordinator.store.onEvent = { [weak self] event in self?.notifications.handle(event) }
         unread.onChange = { [weak self] in self?.refresh() }

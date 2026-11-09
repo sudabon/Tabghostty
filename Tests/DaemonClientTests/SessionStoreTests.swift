@@ -89,6 +89,31 @@ import Testing
         #expect(store.activeSession == nil)
     }
 
+    // 作った（複製した・再起動した）セッションは、一覧に入った時点でアクティブにする。REST の応答と `sessions` は別の接続で届くので、
+    // 作る前の一覧が応答の後に届くことがある。そのときも先頭のタブに戻さず、それまでのアクティブセッションを保つ。
+    @Test func aRequestedSessionBecomesActiveWhenListedEvenAfterAStaleList() {
+        let store = SessionStore()
+        store.apply(sessions(["a", "b"]))
+        store.activate("b")
+
+        store.activate("new")
+        store.apply(sessions(["a", "b"]))
+        #expect(store.activeSessionID == "b")
+
+        store.apply(sessions(["a", "b", "new"]))
+        #expect(store.activeSessionID == "new")
+    }
+
+    // 一覧に入る前にほかのタブを選んだら、そちらを優先する（後から一覧に入っても切り替えない）。
+    @Test func choosingAnotherTabCancelsAPendingActivation() {
+        let store = SessionStore()
+        store.apply(sessions(["a", "b"]))
+        store.activate("new")
+        store.activate("a")
+        store.apply(sessions(["a", "b", "new"]))
+        #expect(store.activeSessionID == "a")
+    }
+
     @Test func bootstrapActions() {
         let store = SessionStore()
         #expect(store.bootstrapAction() == nil)
