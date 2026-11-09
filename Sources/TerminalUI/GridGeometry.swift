@@ -81,6 +81,39 @@ public enum GridGeometry {
     public static func needsUpdate(previous: TerminalController.GridSize?, next: TerminalController.GridSize) -> Bool {
         previous != next
     }
+
+    // MARK: - ポインタの位置（spec: terminal-mouse）
+
+    /// ビューの座標（point、左上が原点）を surface 座標（device pixel）にする。
+    public static func surfacePosition(_ point: CGPoint, scale: CGFloat) -> (x: Double, y: Double) {
+        (Double(point.x * scale), Double(point.y * scale))
+    }
+
+    /// ビューの座標（point、左上が原点）の下にあるセル。パディングを除き、グリッドの中に収める。
+    public static func cell(at point: CGPoint, cell: CellMetrics, cols: Int, rows: Int) -> GridPoint {
+        let column = Int(((point.x - padding) / cell.width).rounded(.down))
+        let row = Int(((point.y - padding) / cell.height).rounded(.down))
+        return GridPoint(x: min(max(0, column), max(0, cols - 1)), y: min(max(0, row), max(0, rows - 1)))
+    }
+
+    /// マウスエンコーダと選択のジェスチャーに渡す、描画領域の大きさ（device pixel）。
+    public static func mouseSurface(viewSize: CGSize, cell: CellMetrics, cols: Int, rows: Int) -> MouseSurface {
+        let scale = cell.scale
+        let width = Int((viewSize.width * scale).rounded())
+        let height = Int((viewSize.height * scale).rounded())
+        let paddingPx = Int((padding * scale).rounded())
+        return MouseSurface(
+            width: width,
+            height: height,
+            cellWidth: cell.widthPx,
+            cellHeight: cell.heightPx,
+            paddingTop: paddingPx,
+            paddingBottom: max(0, height - paddingPx - rows * cell.heightPx),
+            paddingLeft: paddingPx,
+            paddingRight: max(0, width - paddingPx - cols * cell.widthPx),
+            columns: max(1, cols)
+        )
+    }
 }
 
 extension CGFloat {

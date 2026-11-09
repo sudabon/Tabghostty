@@ -74,4 +74,49 @@ import TerminalCore
         #expect(GridGeometry.debounce == .milliseconds(50))
         #expect(GridGeometry.padding == 4)
     }
+
+    // MARK: - ポインタの位置（spec: terminal-mouse「Mouse reporting」）
+
+    @Test func pointerPositionsAccountForPaddingAndScale() {
+        let cell = CellMetrics.make(advance: 8.5, ascent: 12, descent: 4, leading: 1, scale: 2) // 8.5 × 17 pt = 17 × 34 px
+        let position = GridGeometry.surfacePosition(CGPoint(x: 10.25, y: 20.5), scale: 2)
+        #expect(position.x == 20.5)
+        #expect(position.y == 41)
+
+        // 余白（4 pt）を引いてからセルにする。
+        #expect(GridGeometry.cell(at: CGPoint(x: 4 + 8.5 * 9 + 1, y: 4 + 17 * 4 + 1), cell: cell, cols: 80, rows: 24) == GridPoint(x: 9, y: 4))
+        #expect(GridGeometry.cell(at: CGPoint(x: 4 + 8.5 * 9 - 0.5, y: 4 + 17 * 4 - 0.5), cell: cell, cols: 80, rows: 24) == GridPoint(x: 8, y: 3))
+        // 余白の中や、グリッドの外はグリッドの端に収める。
+        #expect(GridGeometry.cell(at: CGPoint(x: 1, y: 1), cell: cell, cols: 80, rows: 24) == GridPoint(x: 0, y: 0))
+        #expect(GridGeometry.cell(at: CGPoint(x: 10_000, y: -50), cell: cell, cols: 80, rows: 24) == GridPoint(x: 79, y: 0))
+
+        // 描画領域（device pixel）。右と下の余白は、セルに収まらない端数を含む。
+        let surface = GridGeometry.mouseSurface(viewSize: CGSize(width: 860, height: 520), cell: cell, cols: 100, rows: 30)
+        #expect(surface.width == 1720)
+        #expect(surface.height == 1040)
+        #expect(surface.cellWidth == 17)
+        #expect(surface.cellHeight == 34)
+        #expect(surface.paddingLeft == 8)
+        #expect(surface.paddingTop == 8)
+        #expect(surface.paddingRight == 1720 - 8 - 1700)
+        #expect(surface.paddingBottom == 1040 - 8 - 1020)
+        #expect(surface.columns == 100)
+    }
+
+    // ビューの座標から SGR 1006 の報告まで（Retina と標準の画面で、同じセルが報告される）。
+    @Test(arguments: [1.0, 2.0])
+    func viewPointToSGRReport(scale: CGFloat) throws {
+        let cell = CellMetrics.make(advance: 8.5, ascent: 12, descent: 4, leading: 1, scale: scale)
+        let terminal = try VTTerminal(cols: 100, rows: 30, maxScrollback: 10)
+        try terminal.resize(cols: 100, rows: 30, cellWidthPx: cell.widthPx, cellHeightPx: cell.heightPx)
+        terminal.write(Array("\u{1b}[?1000h\u{1b}[?1006h".utf8))
+        let surface = GridGeometry.mouseSurface(viewSize: CGSize(width: 860, height: 520), cell: cell, cols: 100, rows: 30)
+        // 10 列目・5 行目（1 始まり）のセルの中。
+        let point = CGPoint(x: GridGeometry.padding + cell.width * 9.5, y: GridGeometry.padding + cell.height * 4.5)
+        let position = GridGeometry.surfacePosition(point, scale: scale)
+        let press = MouseInput(action: .press, button: .left, x: position.x, y: position.y, anyButtonPressed: true, surface: surface)
+        let release = MouseInput(action: .release, button: .left, x: position.x, y: position.y, anyButtonPressed: false, surface: surface)
+        #expect(try terminal.encodeMouse(press) == Array("\u{1b}[<0;10;5M".utf8))
+        #expect(try terminal.encodeMouse(release) == Array("\u{1b}[<0;10;5m".utf8))
+    }
 }

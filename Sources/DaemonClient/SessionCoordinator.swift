@@ -2,15 +2,22 @@ import Foundation
 import os
 import TerminalCore
 
-/// セッションを作る・再起動する REST の操作（テストで差し替える）。
+/// タブの操作に使う REST（テストで差し替える）。
 public protocol SessionAPI: Sendable {
     func createSession(cwd: String?) async throws -> SessionInfo
     func restartSession(id: String) async throws -> SessionInfo
+    func duplicateSession(id: String) async throws -> SessionInfo
+    func deleteSession(id: String) async throws
+    @discardableResult
+    func updateSessionMemo(id: String, memo: String) async throws -> SessionInfo
+    @discardableResult
+    func setSessionNotificationsMuted(id: String, muted: Bool) async throws -> SessionInfo
+    func reorderSessions(ids: [String]) async throws
 }
 
 extension RESTClient: SessionAPI {}
 
-/// 表示中のセッションの `TerminalController`。受信ループから同期的に引けるよう、ロックで守る。
+/// 一覧にあるセッションの `TerminalController`。受信ループから同期的に引けるよう、ロックで守る。
 final class ControllerRegistry: Sendable {
     private let controllers = OSAllocatedUnfairLock(initialState: [String: TerminalController]())
 
@@ -22,6 +29,10 @@ final class ControllerRegistry: Sendable {
         controllers.withLock { Array($0.values) }
     }
 
+    var sids: Set<String> {
+        controllers.withLock { Set($0.keys) }
+    }
+
     func insert(_ controller: TerminalController) {
         controllers.withLock { $0[controller.sid] = controller }
     }
@@ -31,13 +42,17 @@ final class ControllerRegistry: Sendable {
     }
 }
 
-/// WebSocket・セッション一覧・表示中の端末をつなぐ。
+/// WebSocket・セッション一覧・各セッションの端末をつなぐ。
 ///
-/// - `replay` / `output` / `attach_overflow` は、受信ループから直接、表示中のセッションの `TerminalController` に渡す。
-///   表示していないセッションの output は捨てる（detach が無いので届き続ける。design D3）。
-/// - `sessions` / `state` / `agent_state` は `SessionStore` に反映し、アクティブセッションが変わったら
-///   そのセッションのコントローラを作って attach する。
-/// - 再接続したら、表示中のコントローラをリセットして attach し直す（spec: terminal-session「Re-attach after reconnect」）。
+/// - 一覧にあるセッションはすべて attach し、裏のタブも端末を更新し続ける（spec: terminal-session
+///   「All sessions stay attached」、phase3 design D1）。タブを切り替えても replay はしない。
+/// - `replay` / `output` / `attach_overflow` は、受信ループから直接、そのセッションの `TerminalController` に渡す。
+/// - `sessions` / `state` / `agent_state` / `notify` は `SessionStore` に反映する。`sessions` を受け取ったら、
+///   一覧との差分でコントローラを作って attach し、一覧から消えたセッションのコントローラは手放す。
+/// - グリッドのサイズはウィンドウで 1 つ。変わったら全セッションに反映する（spec: terminal-session
+///   「All sessions share the window's grid size」）。
+/// - 再接続したら、次の `sessions` で一覧に残っているセッションをリセットして attach し直す
+///   （spec: terminal-session「Re-attach after reconnect」）。
 /// - 起動後最初の `sessions` で、使えるセッションを用意する（spec: tab-operations「Bootstrap a usable session on startup」）。
 @MainActor
 public final class SessionCoordinator {
@@ -52,15 +67,22 @@ public final class SessionCoordinator {
     /// アクティブセッションの端末。
     public private(set) var activeController: TerminalController?
     public private(set) var isConnected = false
-    /// ビューのグリッドサイズ。新しく作るコントローラに最初から設定する。
+    /// ウィンドウの端末領域のグリッドサイズ。全セッションの端末に反映する。
     public var viewGrid: TerminalController.GridSize? {
         didSet {
-            guard let viewGrid, viewGrid != oldValue, let controller = activeController else { return }
-            Task { await controller.setViewGrid(viewGrid) }
+            guard let viewGrid, viewGrid != oldValue else { return }
+            let controllers = registry.all
+            Task {
+                for controller in controllers {
+                    await controller.setViewGrid(viewGrid)
+                }
+            }
         }
     }
 
     private var didBootstrap = false
+    /// 接続し直したので、次の `sessions` で一覧に残っているセッションを attach し直す。
+    private var needsReattach = false
 
     /// アクティブセッションの端末が変わった。
     public var onActiveControllerChange: ((TerminalController?) -> Void)?
@@ -93,16 +115,32 @@ public final class SessionCoordinator {
         await connection.stop()
     }
 
+    /// セッションの端末（一覧にあるものだけ）。
+    public func controller(for sid: String) -> TerminalController? {
+        registry[sid]
+    }
+
+    /// 端末を持っているセッションの ID。
+    public var attachedSessionIDs: Set<String> {
+        registry.sids
+    }
+
+    /// 一覧にあるすべてのセッションの端末（設定の変更を反映するのに使う）。
+    public var allControllers: [TerminalController] {
+        registry.all
+    }
+
     // MARK: - 受信
 
     nonisolated func handle(_ event: WSConnection.Event) async {
         switch event {
         case .connected:
-            // 表示中のセッションをリセットして attach し直す。サイズは live になってから送る。
-            for controller in registry.all {
-                await controller.attach()
+            // デーモンは接続の直後に `sessions` を送る。一覧に残っているセッションだけを、そのときに attach し直す
+            // （デーモンが再起動して消えたセッションに attach しない）。
+            await MainActor.run {
+                self.needsReattach = true
+                self.setConnected(true)
             }
-            await MainActor.run { self.setConnected(true) }
         case .disconnected:
             for controller in registry.all {
                 await controller.connectionLost()
@@ -124,53 +162,75 @@ public final class SessionCoordinator {
                 await controller.handleAttachOverflow()
             }
             await MainActor.run { self.onTransientMessage?(message) }
-        case .sessions, .state, .agentState:
-            // 新しく表示するセッションは、次のフレームを処理する前に attach しておく。
-            let started = await MainActor.run { self.apply(frame) }
-            if let started {
-                await attach(started)
+        case .sessions, .state, .agentState, .notify:
+            // 新しく attach するセッションは、次のフレームを処理する前に attach しておく。
+            let work = await MainActor.run { self.apply(frame) }
+            for controller in work.attach {
+                await attach(controller)
             }
-        case .notify, .unknown:
-            // 通知は Phase 4。
+            if let activated = work.activated {
+                await activated.resendViewSize()
+            }
+        case .unknown:
             break
         }
     }
 
     // MARK: - セッション一覧とアクティブセッション
 
-    /// 一覧を反映し、アクティブセッションのコントローラを作ったらそれを返す（呼び出し側で attach する）。
-    private func apply(_ frame: ServerFrame) -> TerminalController? {
-        store.apply(frame)
-        guard case .sessions = frame else { return nil }
-        let started = updateActiveController()
-        bootstrapIfNeeded()
-        return started
+    /// フレームを反映したあとにすること。
+    private struct ListWork {
+        /// attach する端末。
+        var attach: [TerminalController] = []
+        /// 新しくアクティブになった、既にある端末（サイズを送り直す）。
+        var activated: TerminalController?
     }
 
-    /// アクティブセッションに合わせてコントローラを作り直す。新しく作ったらそれを返す。
-    @discardableResult
-    private func updateActiveController() -> TerminalController? {
-        let activeID = store.activeSession?.id
-        guard activeController?.sid != activeID else { return nil }
-
-        if let previous = activeController {
-            registry.remove(previous.sid)
+    private func apply(_ frame: ServerFrame) -> ListWork {
+        store.apply(frame)
+        guard case .sessions = frame else { return ListWork() }
+        var work = ListWork()
+        work.attach = syncControllers()
+        if let activated = updateActiveController(), !work.attach.contains(where: { $0 === activated }) {
+            work.activated = activated
         }
-        activeController = nil
+        bootstrapIfNeeded()
+        return work
+    }
 
-        var started: TerminalController?
-        if let activeID {
+    /// 一覧との差分で端末を作り、消えたセッションの端末を手放す。attach する端末を返す。
+    private func syncControllers() -> [TerminalController] {
+        let ids = store.sessions.map(\.id)
+        let listed = Set(ids)
+        for sid in registry.sids where !listed.contains(sid) {
+            registry.remove(sid)
+        }
+
+        var attach: [TerminalController] = []
+        if needsReattach {
+            needsReattach = false
+            attach = ids.compactMap { registry[$0] }
+        }
+        for sid in ids where registry[sid] == nil {
             do {
-                let controller = try makeController(activeID, connection)
+                let controller = try makeController(sid, connection)
                 registry.insert(controller)
-                activeController = controller
-                started = controller
+                attach.append(controller)
             } catch {
                 onTransientMessage?("Failed to create a terminal for the session: \(error.localizedDescription)")
             }
         }
-        onActiveControllerChange?(activeController)
-        return started
+        return attach
+    }
+
+    /// アクティブセッションの端末に切り替える。切り替えたらその端末を返す。
+    @discardableResult
+    private func updateActiveController() -> TerminalController? {
+        let next = store.activeSessionID.flatMap { registry[$0] }
+        guard next !== activeController else { return nil }
+        activeController = next
+        onActiveControllerChange?(next)
+        return next
     }
 
     private nonisolated func attach(_ controller: TerminalController) async {
@@ -180,11 +240,81 @@ public final class SessionCoordinator {
         await controller.attach()
     }
 
-    /// 指定したセッションをアクティブにする。
+    /// 指定したセッションをアクティブにする。端末が既にあれば replay せずにそのまま表示し、
+    /// ほかのクライアントが PTY のサイズを変えているかもしれないので、グリッドサイズを送り直す。
+    /// まだ一覧に無いセッション（作った直後）は、一覧に入ったときにアクティブになる。
     public func activate(_ id: String) {
         store.activate(id)
-        if let started = updateActiveController() {
-            Task { await attach(started) }
+        if let activated = updateActiveController() {
+            Task { await activated.resendViewSize() }
+        }
+    }
+
+    // MARK: - タブの操作（spec: tab-operations）
+
+    /// 新しいセッションをホームディレクトリで作り、アクティブにする。一覧はデーモンの `sessions` で変わる。
+    public func createSession() async {
+        await runActivating { try await self.api.createSession(cwd: nil) }
+    }
+
+    /// セッションを複製し、できたセッションをアクティブにする。
+    public func duplicateSession(_ id: String) async {
+        await runActivating { try await self.api.duplicateSession(id: id) }
+    }
+
+    /// 終了済みのセッションを再起動し、できたセッションをアクティブにする。終了していなければ何もしない。
+    public func restartSession(_ id: String) async {
+        guard store.sessions.first(where: { $0.id == id })?.isExited == true else { return }
+        await runActivating { try await self.api.restartSession(id: id) }
+    }
+
+    /// セッションを閉じる（確認は呼び出し側で行う）。アクティブなら、一覧が変わったときに選び直す。
+    public func closeSession(_ id: String) async {
+        do {
+            try await api.deleteSession(id: id)
+        } catch {
+            onTransientMessage?(error.localizedDescription)
+        }
+    }
+
+    /// メモを保存する（失敗したら投げる。メモの編集シートを開いたままにするため）。
+    public func updateMemo(_ id: String, memo: String) async throws {
+        do {
+            try await api.updateSessionMemo(id: id, memo: memo)
+        } catch {
+            onTransientMessage?(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// 通知のミュートを切り替える。すぐにこのクライアントの表示を変え、失敗したら戻してメッセージを出す。
+    public func toggleNotificationsMuted(_ id: String) async {
+        guard let current = store.sessions.first(where: { $0.id == id }) else { return }
+        let muted = !current.notificationsMuted
+        store.setNotificationsMuted(id, muted)
+        do {
+            try await api.setSessionNotificationsMuted(id: id, muted: muted)
+        } catch {
+            store.setNotificationsMuted(id, !muted)
+            onTransientMessage?(error.localizedDescription)
+        }
+    }
+
+    /// 並べ替えた順序を保存する。ローカルの並びは変えず、デーモンの `sessions` を待つ。
+    public func reorderSessions(_ ids: [String]) async {
+        do {
+            try await api.reorderSessions(ids: ids)
+        } catch {
+            onTransientMessage?(error.localizedDescription)
+        }
+    }
+
+    private func runActivating(_ request: @escaping @Sendable () async throws -> SessionInfo) async {
+        do {
+            let session = try await request()
+            activate(session.id)
+        } catch {
+            onTransientMessage?(error.localizedDescription)
         }
     }
 
@@ -198,18 +328,9 @@ public final class SessionCoordinator {
         case .useExisting:
             return
         case .create:
-            Task { await self.runBootstrap { try await self.api.createSession(cwd: nil) } }
+            Task { await self.runActivating { try await self.api.createSession(cwd: nil) } }
         case .restart(let id):
-            Task { await self.runBootstrap { try await self.api.restartSession(id: id) } }
-        }
-    }
-
-    private func runBootstrap(_ request: @escaping @Sendable () async throws -> SessionInfo) async {
-        do {
-            let session = try await request()
-            activate(session.id)
-        } catch {
-            onTransientMessage?(error.localizedDescription)
+            Task { await self.runActivating { try await self.api.restartSession(id: id) } }
         }
     }
 

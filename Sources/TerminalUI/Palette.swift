@@ -51,7 +51,7 @@ public struct Palette: Equatable, Sendable {
     }
 
     /// `color_scheme`（light / dark / system）から決める。system なら `systemIsDark` に従う。
-    /// 設定や system の変化への追従は Phase 4 で扱う。
+    /// 設定や system の変化への追従は `AppearanceController`（Shell）が行う。
     public static func resolve(colorScheme: String, systemIsDark: Bool) -> Palette {
         switch colorScheme {
         case "light": return .light

@@ -91,4 +91,85 @@ import Testing
         store.apply(sessions(["a", "b"], exited: ["b"]))
         #expect(store.bootstrapAction() == .useExisting)
     }
+    // MARK: - 通知の対象になるイベント（phase3 tasks 4.1、design D3）
+
+    private func state(_ sid: String, _ value: String, exit: String = "null", runMs: Int = 0) -> ServerFrame {
+        frame(#"{"t":"state","sid":"\#(sid)","cwd":"/a","cmd":"make","state":"\#(value)","exit":\#(exit),"integrated":true,"run_ms":\#(runMs)}"#)
+    }
+
+    @Test func runningToIdleEmitsACompletionEventAfterApplyingTheState() {
+        let store = SessionStore()
+        store.apply(sessions(["a", "b"]))
+        var events: [SessionEvent] = []
+        var cwdAtEvent: String?
+        store.onEvent = { event in
+            events.append(event)
+            cwdAtEvent = store.sessions.first { $0.id == event.sid }?.cwd
+        }
+
+        store.apply(state("a", "running"))
+        #expect(events.isEmpty)
+        store.apply(state("a", "idle", exit: "0", runMs: 4200))
+        #expect(events.count == 1)
+        guard case .commandFinished(let session) = events.first else {
+            Issue.record("expected a completion event")
+            return
+        }
+        // 反映した後のセッションを渡す。
+        #expect(session.id == "a")
+        #expect(session.runMs == 4200)
+        #expect(session.exit == 0)
+        #expect(cwdAtEvent == "/a")
+
+        // running 以外から idle、running から running / exited は完了イベントにしない。
+        store.apply(state("a", "idle"))
+        store.apply(state("b", "starting"))
+        store.apply(state("b", "idle"))
+        store.apply(state("b", "running"))
+        store.apply(state("b", "running"))
+        store.apply(state("b", "exited", exit: "1"))
+        #expect(events.count == 1)
+    }
+
+    @Test func notifyEmitsAWaitEventOnlyWhenTitleOrBodyIsNotBlank() {
+        let store = SessionStore()
+        store.apply(sessions(["a"]))
+        var events: [SessionEvent] = []
+        var changes = 0
+        store.onEvent = { events.append($0) }
+        store.onChange = { changes += 1 }
+
+        store.apply(.notify(sid: "a", title: "  ", body: "\n"))
+        store.apply(.notify(sid: "a", title: "", body: ""))
+        #expect(events.isEmpty)
+
+        store.apply(.notify(sid: "a", title: "Claude Code", body: ""))
+        store.apply(.notify(sid: "a", title: "", body: "Ready"))
+        #expect(events == [
+            .agentWaiting(sid: "a", title: "Claude Code", body: ""),
+            .agentWaiting(sid: "a", title: "", body: "Ready"),
+        ])
+        // 一覧に無いセッションの notify は無視する。
+        store.apply(.notify(sid: "zzz", title: "x", body: "y"))
+        #expect(events.count == 2)
+        // notify では一覧は変わらない。
+        #expect(changes == 0)
+    }
+
+    @Test func notificationsMutedCanBeChangedLocallyUntilTheNextList() {
+        let store = SessionStore()
+        store.apply(sessions(["a", "b"]))
+        var changes = 0
+        store.onChange = { changes += 1 }
+        store.setNotificationsMuted("a", true)
+        #expect(store.sessions[0].notificationsMuted)
+        #expect(store.sessions[1].notificationsMuted == false)
+        // 同じ値・一覧に無いセッションでは何もしない。
+        store.setNotificationsMuted("a", true)
+        store.setNotificationsMuted("zzz", true)
+        #expect(changes == 1)
+        // デーモンの一覧で置き換わる。
+        store.apply(frame(#"{"t":"sessions","list":[{"id":"a","notifications_muted":false},{"id":"b","notifications_muted":true}]}"#))
+        #expect(store.sessions.map(\.notificationsMuted) == [false, true])
+    }
 }

@@ -116,12 +116,14 @@ public struct FrameSnapshot: Sendable, Equatable {
     public var isFull: Bool
     /// 変化した行（viewport の y 座標と、その行のセル）。
     public var dirtyRows: [(y: Int, cells: [CellSnapshot])]
+    /// 変化した行のうち、選択されている列の範囲（両端を含む）。選択の無い行は入っていない。
+    public var selections: [Int: ClosedRange<Int>] = [:]
     public var colors: FrameColors
     public var cursor: CursorSnapshot?
 
     public static func == (lhs: FrameSnapshot, rhs: FrameSnapshot) -> Bool {
         lhs.cols == rhs.cols && lhs.rows == rhs.rows && lhs.isFull == rhs.isFull
-            && lhs.colors == rhs.colors && lhs.cursor == rhs.cursor
+            && lhs.colors == rhs.colors && lhs.cursor == rhs.cursor && lhs.selections == rhs.selections
             && lhs.dirtyRows.count == rhs.dirtyRows.count
             && zip(lhs.dirtyRows, rhs.dirtyRows).allSatisfy { $0.y == $1.y && $0.cells == $1.cells }
     }
@@ -184,9 +186,13 @@ final class RenderStateReader {
         )
 
         var dirtyRows: [(y: Int, cells: [CellSnapshot])] = []
+        var selections: [Int: ClosedRange<Int>] = [:]
         var y: UInt16 = 0
         while ghostty_render_state_row_iterator_next_dirty(rowIterator, &y) {
             dirtyRows.append((Int(y), try readRow(cols: Int(cols))))
+            if let selected = readRowSelection() {
+                selections[Int(y)] = selected
+            }
         }
 
         return FrameSnapshot(
@@ -194,9 +200,21 @@ final class RenderStateReader {
             rows: Int(rows),
             isFull: dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL,
             dirtyRows: dirtyRows,
+            selections: selections,
             colors: readColors(),
             cursor: readCursor()
         )
+    }
+
+    /// 今の行のうち、選択されている列の範囲。
+    private func readRowSelection() -> ClosedRange<Int>? {
+        var selection = GhosttyRenderStateRowSelection()
+        ghostty_sized_init(&selection, MemoryLayout<GhosttyRenderStateRowSelection>.size)
+        guard ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS,
+              selection.start_x <= selection.end_x else {
+            return nil
+        }
+        return Int(selection.start_x)...Int(selection.end_x)
     }
 
     private func readRow(cols: Int) throws -> [CellSnapshot] {

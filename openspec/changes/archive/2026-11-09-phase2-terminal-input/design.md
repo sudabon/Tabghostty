@@ -58,6 +58,8 @@
 ```
 
 - 判定の条件は、`NSEvent` から取り出した値型の `KeyInput`（`characters`、`charactersIgnoringModifiers`、`keyCode`、`modifierFlags`、`isComposing`）を受け取る純粋関数 `classifyKey(_:settings:) -> KeyAction` にまとめる。これで AppKit 無しでもテストできる。`terminal-input.test.ts` のケースは、ここに移植する。
+  - 実装メモ: `KeyInput` は Phase 1 でキーエンコーダに渡す値の名前として使っているので、判定に渡す値型は `KeyStroke` とした。
+  - キーを離したとき（keyUp と、修飾キーの `flagsChanged`）も `classifyKey` を通す。変換中・Command 付き・書き換えたキー（Shift+Enter、¥）は無視し、それ以外は「離した」としてキーエンコーダに渡す（kitty keyboard protocol で求められたときだけ出力される）。
 - Ctrl+文字を `interpretKeyEvents` に渡すと、`insertNewline:` などのセレクタに変換されてしまう。そのため 5 でキーエンコーダに直接渡す。
 - `doCommand(by:)` で来るセレクタは無視する。キーエンコーダに渡すのは keyDown 側だけにする。
 - 参考にする実装: Ghostty 本体の macOS 版の `SurfaceView_AppKit.swift`（キーの変換、修飾キーのうち文字合成に使われた分（consumed mods）の扱い、IME）。
@@ -67,6 +69,7 @@
 - `setMarkedText` で受け取った未確定の文字列は、`TerminalView` の状態として持つ。描画するときに、カーソルのセルから、背景を塗って下線付きで重ねて描く。Terminal には書き込まない。
 - `insertText`（確定）が来たら、`classifyKey` を通さずにテキストとして送る（`¥` の書き換えはしない）。
 - `firstRect(forCharacterRange:actualRange:)` は、カーソルのセルの矩形をスクリーン座標に変換して返す。未確定の文字列がある場合は、その末尾の位置を返す。
+  - 実装メモ: 未確定の文字列の中の `range.location` まで進めた位置を返す。IME が挿入位置（末尾）を渡せば末尾になり、文節の範囲を渡せばその文節の先頭になる。
 - 変換中の Enter / Escape / Backspace は IME が消費するので、PTY には送らない（D1 の 1 で処理する）。
 
 ### D3. マウスと選択
@@ -78,6 +81,12 @@
   - 選択はライブラリの選択機能で管理する（Phase 0 の対応表で、あることを確認済みであることが前提）。ライブラリに無い場合は、RenderState のセル座標を使って Swift 側で範囲を管理し、テキストに変換するときに plain フォーマッタの範囲指定を使う。
   - ダブルクリックは単語、トリプルクリックは行を選択する。単語の区切り文字は libghostty の既定値に従う。
   - ドラッグが上下の端を越えたら、タイマーで viewport を自動スクロールする。
+  - **決定（2026-11-09、タスク 4.1）: ライブラリの API で管理する。** Phase 0 の対応表（`Sources/TerminalCore/README.md`）にあるとおり、libghostty-vt 1.0 には次がそろっているので、Swift 側では範囲を持たない。
+    - 押す・ドラッグ・離す・自動スクロールの解釈: 選択のジェスチャー（`ghostty_selection_gesture_*`）。何回目のクリックかは、押した時刻（`event.timestamp`）と `NSEvent.doubleClickInterval` からライブラリが決める。
+    - 選択の保持: `GHOSTTY_TERMINAL_OPT_SELECTION`（端末が tracked な参照として持ち、出力でスクロールしても選択が付いていく）。
+    - 描画: RenderState の行ごとの選択範囲（`GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION`）を `FrameSnapshot` に入れる。
+    - テキスト: plain フォーマッタに選択を渡し、`UNWRAP` と `TRIM` を両方 true にする（Ghostty 本体のコピーと同じ）。
+    - 自動スクロールの 1 回は viewport を 1 行動かすので、そのあと `scrollback_lines` の上限（D5）に戻す。
 - **copy on select**: マウスを離した時点で選択が空でなければコピーする。Web 版は選択が変わるたびに書き込むが、利用者から見える結果は同じになる。
 
 ### D4. ペースト

@@ -16,7 +16,12 @@ let package = Package(
         // アプリの外枠（AppDelegate、ウィンドウ、メニュー、起動失敗画面、トースト）。
         .target(
             name: "TabghosttyApp",
-            dependencies: ["DaemonClient", "TerminalUI", "TerminalCore"]
+            dependencies: ["DaemonClient", "DesktopSupport", "TerminalUI", "TerminalCore", "Shell"]
+        ),
+        // サイドバー、タブの操作、状態 pill、未読と Dock バッジ、メモ、キーマップ（Phase 3）、通知・設定画面・画像の添付・配色（Phase 4）。
+        .target(
+            name: "Shell",
+            dependencies: ["DaemonClient", "DesktopSupport", "TerminalUI", "TerminalCore"]
         ),
         // libghostty-vt 1.0（静的ライブラリの XCFramework。`make deps` で取得する）。
         // Headers/module.modulemap が `module GhosttyVt` を宣言しているので、そのまま import できる。
@@ -57,7 +62,11 @@ let package = Package(
         ),
         .testTarget(
             name: "TabghosttyAppTests",
-            dependencies: ["TabghosttyApp"]
+            dependencies: ["TabghosttyApp", "Shell", "DaemonClient"]
+        ),
+        .testTarget(
+            name: "ShellTests",
+            dependencies: ["Shell", "DaemonClient", "DesktopSupport", "TerminalUI", "TerminalCore"]
         ),
         .testTarget(
             name: "DaemonClientTests",

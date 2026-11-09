@@ -1,11 +1,12 @@
 import AppKit
 import DaemonClient
+import Shell
 import TerminalCore
 import TerminalUI
 
 /// メインウィンドウ（spec: app-shell「Main window」）。
 ///
-/// 中身は「接続中」「起動失敗」「端末」のどれか 1 つで、その上にトーストを重ねる。
+/// 中身は「接続中」「起動失敗」「サイドバーと端末」のどれか 1 つで、その上にトーストとコードの保留中の表示を重ねる。
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate {
     static let initialSize = NSSize(width: 1100, height: 720)
@@ -13,8 +14,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let container = NSView()
     private let toast = ToastView()
+    private let chordIndicator = ChordIndicatorView()
     private var content: NSView?
-    private(set) var terminalView: TerminalView?
+    private(set) var shell: TabShellController?
     private var failureView: StartupFailureView?
 
     init() {
@@ -38,10 +40,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         toast.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(toast)
+        chordIndicator.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(chordIndicator)
         NSLayoutConstraint.activate([
             toast.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             toast.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
             toast.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -32),
+            // コードの保留中の表示は、ウィンドウの下中央（spec: keyboard-shortcuts）。
+            chordIndicator.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            chordIndicator.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
         ])
     }
 
@@ -53,14 +60,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - 中身の切り替え
 
     func showConnecting() {
-        terminalView = nil
+        shell = nil
         failureView = nil
+        showChordIndicator(nil)
         setContent(ConnectingView())
         window?.title = WindowTitle.appName
     }
 
     func showStartupFailure(_ message: String, retry: @escaping () -> Void) {
-        terminalView = nil
+        shell = nil
+        showChordIndicator(nil)
         let view = StartupFailureView()
         view.message = message
         view.onRetry = { [weak view] in
@@ -73,14 +82,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(nil)
     }
 
-    func showTerminal(_ view: TerminalView, background: ColorRGB) {
+    func showShell(_ shell: TabShellController) {
         failureView = nil
-        terminalView = view
-        setContent(view)
-        window?.backgroundColor = NSColor(
-            srgbRed: CGFloat(background.r) / 255, green: CGFloat(background.g) / 255, blue: CGFloat(background.b) / 255, alpha: 1
-        )
-        window?.makeFirstResponder(view)
+        self.shell = shell
+        setContent(shell.splitViewController.view)
+        applyTheme(shell.appearance.theme)
+        if let window {
+            shell.attach(to: window)
+        }
+        shell.focusTerminal()
+    }
+
+    /// 配色をウィンドウの背景・外観とコードの表示に合わせる（spec: color-scheme「Scheme applies everywhere」）。
+    func applyTheme(_ theme: ResolvedTheme) {
+        chordIndicator.palette = theme.chrome
+        window?.backgroundColor = theme.chrome.background.nsColor
+        window?.appearance = theme.appearance
+    }
+
+    /// コードの保留中の表示（nil なら隠す）。
+    func showChordIndicator(_ text: String?) {
+        chordIndicator.text = text
     }
 
     func showToast(_ message: String) {

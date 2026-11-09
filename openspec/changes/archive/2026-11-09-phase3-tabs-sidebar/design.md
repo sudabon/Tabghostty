@@ -52,6 +52,11 @@
   - iTerm2 や Terminal.app でも、同じウィンドウの裏のタブはリサイズされる。
   - Web 版はアクティブのタブにしか resize を送らないが、Tabghostty では全タブを attach しているので、ローカルの Terminal と PTY のサイズを一致させることを優先する。
 
+**実装メモ（2026-11-09）:**
+
+- IME の変換（入力メソッドのセッション）はビューに結び付いていて、コントローラごとに保存して戻すことはできない。そのため、切り替えるときは未確定の文字列だけを前のコントローラに預けて変換を終わらせ、戻ったときに表示だけを戻す。戻した文字列は IME が知らないので、次のキーで確定（Enter。ほかのキーは、そのキーを処理する前に確定）・取り消し（Escape）・1 文字削除（Backspace）する。
+- 再接続したときは、`connected` の時点ではなく、直後に届く `sessions` で一覧に残っているセッションだけを attach し直す（デーモンが再起動して消えたセッションに attach しない）。
+
 **採用しなかった案:**
 
 - 裏のタブは resize しない: ローカルの Terminal（新しいサイズ）と PTY（古いサイズ）がずれ、裏で出た出力の表示が崩れる。
@@ -66,6 +71,8 @@
 - 並べ替えは `NSTableView` のドラッグ＆ドロップで行い、ドロップしたら `PUT /api/sessions/order` を送る。ローカルの並びは変えず、デーモンの broadcast を待つ（Web 版と同じ）。
 - 配色は Web 版の chrome トークン（`web/src/index.css`）を `ChromePalette` に移植する。値は Phase 4 で配色を動的に切り替えるときにも使う。
 - メモのツールチップは標準の `toolTip` を使わず、1 秒のディレイで出す独自のポップオーバーにする。標準の `toolTip` では、表示までの時間と、どの操作で隠すかを制御できないため。
+
+**実装メモ（2026-11-09）:** macOS 26 の `NSSplitViewItem(sidebarWithViewController:)` は、サイドバーを枠の内側に浮かせて余白を取る（ガラスの外観）。この余白のため、`minimumThickness` / `maximumThickness` が枠とビューのどちらの幅に効くかがずれ、配色も chrome トークンにならない。そこで、ふつうの `NSSplitViewItem(viewController:)` に最小・最大の幅（160〜480）、`canCollapse`、`holdingPriority` を指定した。折りたたみは `isCollapsed`（アニメーションは `animator()`）で行い、ドラッグでは折りたたまない。ドラッグの終わりは、`NSSplitView.mouseDown`（境界のドラッグをこの中で追跡する）から戻った時点で判定する。行のドラッグは、`NSTableView` の既定の開始条件では 6pt を指定できないので、行のビューが 6pt 動いたのを見てドラッグを始め、ドロップは `NSTableView` で受ける。
 
 ### D3. 未読の管理（`UnreadTracker`）と Dock バッジ
 

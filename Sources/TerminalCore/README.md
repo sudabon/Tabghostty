@@ -36,7 +36,7 @@ libghostty-vt（C API）の Swift ラッパー。
 | 設定 / effect の登録 | Terminal options | `ghostty_terminal_set(terminal, GhosttyTerminalOption, value)` | `terminal.h` | `NULL` を渡すと既定値に戻る。effect の一覧は後述 |
 | 状態の取得 | — | `ghostty_terminal_get` / `ghostty_terminal_get_multi`（`GHOSTTY_TERMINAL_DATA_*`） | `terminal.h` | 次のような値を取れる: COLS / ROWS、CURSOR_*、ACTIVE_SCREEN、KITTY_KEYBOARD_FLAGS、MOUSE_TRACKING、SCROLLBAR、SELECTION、MODE、TITLE、PWD、MOUSE_SHAPE、MEMORY_USAGE、VIEWPORT_ACTIVE、TOTAL_ROWS、SCROLLBACK_ROWS（`size_t`。Phase 1 でスクロールバックの行数に使う） |
 | viewport のスクロール | — | `ghostty_terminal_scroll_viewport(terminal, GhosttyTerminalScrollViewport)` | `terminal.h` | TOP / BOTTOM / DELTA（上が負）/ ROW / DELTA_PROMPT（OSC 133 が必要）。Phase 2 |
-| 最大スクロールバック | max scrollback | `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`（`size_t*`）と `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES`（`size_t*`） | `terminal.h` | **既定ではバイト数の上限が 10,000 バイト**（実際には 1 ページ、約 400 KB）で、行数の上限は無い。`scrollback_lines` を反映するには、`MAX_BYTES = SIZE_MAX` にしたうえで `MAX_LINES` を設定する。削除はページ単位なので、実際に残る行数は設定値より多くなる |
+| 最大スクロールバック | max scrollback | `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`（`size_t*`）と `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES`（`size_t*`） | `terminal.h` | **既定ではバイト数の上限が 10,000 バイト**（実際には 1 ページ、約 400 KB）で、行数の上限は無い。`scrollback_lines` を反映するには、`MAX_BYTES = SIZE_MAX` にしたうえで `MAX_LINES` を設定する。削除はページ単位なので、実際に残る行数は設定値より多くなる。いつでも変えられるので、Phase 4 では `scrollback_lines` の変更を作成済みの Terminal にも反映する（`TerminalController.setMaxScrollback`） |
 | セル / 行の参照 | — | `ghostty_terminal_grid_ref` / `ghostty_grid_ref_cell` / `_row` / `_graphemes` / `_style` / `_hyperlink_uri` | `terminal.h`, `grid_ref.h` | 参照は次に Terminal を変更するまでしか有効でない。変更を越えて追跡するなら `ghostty_terminal_grid_ref_track`（`grid_ref_tracked.h`） |
 | スクロールバックの圧縮 | — | `ghostty_terminal_compress` / `ghostty_terminal_compression_activity` | `terminal.h` | アイドル時に INCREMENTAL で呼ぶ。Phase 5 のメモリ対策の候補 |
 
@@ -62,7 +62,7 @@ libghostty-vt（C API）の Swift ラッパー。
 | 配色の問い合わせ（`CSI ? 996 n`） | — | `GHOSTTY_TERMINAL_OPT_COLOR_SCHEME` / `GhosttyTerminalColorSchemeFn` | NULL なら無視する。Phase 4 で、解決済みの配色を返すように登録してもよい |
 | ENQ（0x05） | — | `GHOSTTY_TERMINAL_OPT_ENQUIRY` / `GhosttyTerminalEnquiryFn` | NULL なら応答しない。登録しない |
 | その他 | — | `OPT_TITLE_REPORT`（既定で無効）、`OPT_PROGRAM_STATUS`（NULL なら応答しない）、`OPT_RESIZE_WINDOW` / `OPT_RESET` / `OPT_UNKNOWN_SEQUENCE`（NULL なら無視する） | 登録しない。必要になったら、その Phase で追記する |
-| 既定の色 | — | `OPT_COLOR_FOREGROUND` / `_BACKGROUND` / `_CURSOR`（`GhosttyColorRgb*`）/ `_PALETTE`（`GhosttyColorRgb[256]`） | Tabghostty の配色を設定する（Phase 1）。OSC 10/11/12 には、デーモンが応答する。`ghostty_terminal_reset` の後も残るが、念のため attach のたびに設定し直す |
+| 既定の色 | — | `OPT_COLOR_FOREGROUND` / `_BACKGROUND` / `_CURSOR`（`GhosttyColorRgb*`）/ `_PALETTE`（`GhosttyColorRgb[256]`） | Tabghostty の配色を設定する（Phase 1）。OSC 10/11/12 には、デーモンが応答する。`ghostty_terminal_reset` の後も残るが、念のため attach のたびに設定し直す。Phase 4 では、配色を切り替えたときにも設定し直す（`TerminalController.setColors`） |
 | 既定のカーソル | — | `GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE`（`GhosttyCursorStyle*`）/ `GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK`（`bool*`） | DECSCUSR 0 で戻る形と点滅。Phase 1 で「点滅するブロック」にする（xterm.js の `cursorBlink: true` と同じ） |
 | Kitty Graphics の設定 | — | `OPT_KITTY_IMAGE_STORAGE_LIMIT` / `_MEDIUM_FILE` / `_MEDIUM_TEMP_FILE` / `_MEDIUM_SHARED_MEM`、`OPT_APC_MAX_BYTES(_KITTY)` | Phase 5 |
 
@@ -87,7 +87,7 @@ libghostty-vt（C API）の Swift ラッパー。
 |---|---|---|---|---|
 | キーエンコーダ | KeyEncoder | `ghostty_key_encoder_new` / `_free` / `_set`（`OPT_CURSOR_KEY_APPLICATION` / `OPT_KEYPAD_KEY_APPLICATION` / `OPT_ALT_ESC_PREFIX` / `OPT_KITTY_FLAGS` / `OPT_MACOS_OPTION_AS_ALT` / `OPT_BACKARROW_KEY_MODE`）/ `_set_from_terminal(encoder, terminal)` / `_encode(encoder, event, buf, len, &written)` | `key/encoder.h` | 送る前に `_set_from_terminal` で Terminal のモードを反映する。Phase 1 / 2 |
 | キーイベント | — | `ghostty_key_event_new` / `_free` / `_set_action` / `_set_key`（`GhosttyKey`）/ `_set_mods` / `_set_consumed_mods` / `_set_composing` / `_set_utf8` / `_set_unshifted_codepoint` | `key/event.h`, `key.h` | 修飾キーのうち文字合成に使われた分（consumed mods）は `_set_consumed_mods` で渡す（Phase 2） |
-| マウスエンコーダ | MouseEncoder | `ghostty_mouse_encoder_new` / `_free` / `_set`（`OPT_EVENT` / `OPT_FORMAT` / `OPT_SIZE` / `OPT_ANY_BUTTON_PRESSED` / `OPT_TRACK_LAST_CELL`）/ `_set_from_terminal` / `_reset` / `_encode` | `mouse/encoder.h` | Phase 2 |
+| マウスエンコーダ | MouseEncoder | `ghostty_mouse_encoder_new` / `_free` / `_set`（`OPT_EVENT` / `OPT_FORMAT` / `OPT_SIZE` / `OPT_ANY_BUTTON_PRESSED` / `OPT_TRACK_LAST_CELL`）/ `_set_from_terminal` / `_reset` / `_encode` | `mouse/encoder.h` | Phase 2。`_set_from_terminal` だけでなく、`OPT_SIZE` と `OPT_ANY_BUTTON_PRESSED` を設定し直しても、同じセルへの移動を省く記録（`TRACK_LAST_CELL`）が消える（2026-11-09 の計測）。値が変わったときだけ設定する |
 | マウスイベント | — | `ghostty_mouse_event_new` / `_set_action` / `_set_button` / `_clear_button` / `_set_mods` / `_set_position`（`GhosttyMousePosition`） | `mouse/event.h`, `mouse.h` | |
 | フォーカス | focus encoding | `ghostty_focus_encode(GHOSTTY_FOCUS_GAINED / GHOSTTY_FOCUS_LOST, buf, len, &written)` | `focus.h` | DECSET 1004 が有効かどうかは `GHOSTTY_TERMINAL_DATA_MODE` で確かめる。Phase 2 |
 | ペースト | paste utilities | `ghostty_paste_is_safe(data, len)` / `ghostty_paste_encode(data, len, bracketed, buf, len, &written)` / `ghostty_terminal_paste(terminal, &GhosttyPaste, &pasted)` | `paste.h` | 危険なペーストの判定と bracketed paste は、これで行う（Phase 2） |

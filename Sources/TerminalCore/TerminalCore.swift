@@ -65,6 +65,10 @@ public final class VTTerminal {
     fileprivate var sizeReport: GhosttySizeReportSize
 
     private var keyEncoder: KeyEncoder?
+    /// マウスエンコーダ（最初のマウスの報告で作る）。
+    var mouseEncoder: MouseEncoder?
+    /// 選択のジェスチャー（最初の選択の操作で作る）。
+    var selectionGesture: SelectionGesture?
     /// 描画用の RenderState（`makeSnapshot` で初めて作る）。
     var renderReader: RenderStateReader?
 
@@ -105,6 +109,9 @@ public final class VTTerminal {
 
     deinit {
         keyEncoder = nil
+        mouseEncoder = nil
+        // ジェスチャーは端末の参照を持っているので、端末より先に解放する。
+        selectionGesture = nil
         renderReader = nil
         ghostty_terminal_free(handle)
     }
@@ -120,6 +127,8 @@ public final class VTTerminal {
         if handled == nil {
             Array(bytes).withUnsafeBufferPointer { writeBuffer($0) }
         }
+        // マウスのモードが変わったかもしれない。
+        mouseEncoder?.needsSync = true
     }
 
     /// これまでに溜まった effect を、出た順に取り出す。
@@ -148,11 +157,15 @@ public final class VTTerminal {
             "ghostty_terminal_resize"
         )
         sizeReport = GhosttySizeReportSize(rows: UInt16(rows), columns: UInt16(cols), cell_width: width, cell_height: height)
+        mouseEncoder?.needsSync = true
     }
 
-    /// 完全リセット（RIS 相当）。画面・スクロールバック・モードが初期状態に戻る。サイズと既定の配色は保たれる。
+    /// 完全リセット（RIS 相当）。画面・スクロールバック・モード・選択が初期状態に戻る。サイズと既定の配色は保たれる。
     public func reset() {
+        selectionGesture?.reset()
         ghostty_terminal_reset(handle)
+        _ = ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+        mouseEncoder?.needsSync = true
     }
 
     /// スクロールバックに残す最大行数を設定する（`scrollback_lines`）。
@@ -230,6 +243,14 @@ public final class VTTerminal {
     /// 画面の内容を plain テキスト（エスケープシーケンスなし、行末の空白なし）で返す。
     /// 1 行が 1 つの端末行に対応する（ソフト折り返しは結合しない）。
     public func plainText() throws -> String {
+        try format(selection: nil, unwrap: false)
+    }
+
+    /// plain テキストにする。
+    /// - Parameters:
+    ///   - selection: この範囲だけにする。nil なら画面全体
+    ///   - unwrap: ソフト折り返しされた行を 1 行に結合する
+    func format(selection: UnsafeMutablePointer<GhosttySelection>?, unwrap: Bool) throws -> String {
         var formatter: GhosttyFormatter?
         try Self.check(
             ghostty_formatter_terminal_new(nil, &formatter, handle),
@@ -243,10 +264,16 @@ public final class VTTerminal {
         // 既定値は PLAIN・UNWRAP=false・TRIM=true だが、意図を明示しておく。
         var emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
         try Self.check(ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &emit), "ghostty_formatter_set(EMIT)")
-        var unwrap = false
+        var unwrap = unwrap
         try Self.check(ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap), "ghostty_formatter_set(UNWRAP)")
         var trim = true
         try Self.check(ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim), "ghostty_formatter_set(TRIM)")
+        if let selection {
+            try Self.check(
+                ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_SELECTION, selection),
+                "ghostty_formatter_set(SELECTION)"
+            )
+        }
 
         var pointer: UnsafeMutablePointer<UInt8>?
         var length = 0
@@ -301,6 +328,11 @@ public final class VTTerminal {
                 unsafeBitCast(vtDesktopNotification, to: UnsafeRawPointer.self)
             ),
             "ghostty_terminal_set(DESKTOP_NOTIFICATION)"
+        )
+        // OSC 52 などのクリップボードへの書き込み。読み取りの callback は登録しない（常に応答しない。phase2 design D6）。
+        try Self.check(
+            ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, unsafeBitCast(vtClipboardWrite, to: UnsafeRawPointer.self)),
+            "ghostty_terminal_set(CLIPBOARD_WRITE)"
         )
         // 未登録だと CSI 14/16/18/19 t を黙って無視するので、最後に resize に渡した値を返す。
         try Self.check(
@@ -362,6 +394,25 @@ private let vtDesktopNotification: GhosttyTerminalDesktopNotificationFn = { _, u
     terminal.pendingEffects.append(
         .desktopNotification(title: string(notification.pointee.title), body: string(notification.pointee.body))
     )
+}
+
+/// 標準のクリップボードへのテキストの書き込みだけを effect にする。書き込むかどうかは `TerminalController` が phase で決める。
+private let vtClipboardWrite: GhosttyTerminalClipboardWriteFn = { _, userdata, write in
+    guard let write else { return }
+    var reply = GhosttyClipboardWriteReply()
+    ghostty_sized_init(&reply, MemoryLayout<GhosttyClipboardWriteReply>.size)
+    reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
+    defer { write.pointee.reply?(write, &reply) }
+
+    let request = write.pointee
+    // macOS には selection / primary のクリップボードが無いので、標準のクリップボードだけを扱う。
+    // 内容が空（クリアの要求）なら何もしない。
+    guard let terminal = terminal(from: userdata), request.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD,
+          request.contents_len > 0, let contents = request.contents else { return }
+    let entries = UnsafeBufferPointer(start: contents, count: request.contents_len)
+    guard let text = entries.first(where: { string($0.mime).hasPrefix("text/plain") }) else { return }
+    terminal.pendingEffects.append(.clipboardWrite(string(text.data)))
+    reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
 }
 
 private let vtSize: GhosttyTerminalSizeFn = { _, userdata, out in

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 import UserNotifications
 
 public enum ConfigPortError: Error {
@@ -220,14 +221,15 @@ public func spawnDetachedProcess(executablePath: String, arguments: [String], lo
     return pid
 }
 
-enum DesktopNotificationPermission: String, Equatable {
+/// 通知の許可の状態（Web 版の `NotificationPermissionState` と同じ 4 つ）。
+public enum DesktopNotificationPermission: String, Equatable, Sendable {
     case `default`
     case granted
     case denied
     case unsupported
 }
 
-func desktopNotificationPermission(for status: UNAuthorizationStatus) -> DesktopNotificationPermission {
+public func desktopNotificationPermission(for status: UNAuthorizationStatus) -> DesktopNotificationPermission {
     switch status {
     case .notDetermined:
         return .default
@@ -240,59 +242,69 @@ func desktopNotificationPermission(for status: UNAuthorizationStatus) -> Desktop
     }
 }
 
-protocol UserNotificationCenterClient: AnyObject {
-    func getAuthorizationStatus(completion: @escaping (UNAuthorizationStatus) -> Void)
-    func requestAuthorization(
-        options: UNAuthorizationOptions,
-        completion: @escaping (Bool, Error?) -> Void
-    )
-    func add(_ request: UNNotificationRequest, completion: @escaping (Error?) -> Void)
+/// `UNUserNotificationCenter` のうち使うもの（テストで差し替える）。
+protocol UserNotificationCenterClient: AnyObject, Sendable {
+    func authorizationStatus() async -> UNAuthorizationStatus
+    func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
+    func add(_ request: UNNotificationRequest) async throws
 }
 
-final class SystemUserNotificationCenterClient: UserNotificationCenterClient {
+final class SystemUserNotificationCenterClient: UserNotificationCenterClient, @unchecked Sendable {
     private let center: UNUserNotificationCenter
 
     init(center: UNUserNotificationCenter) {
         self.center = center
     }
 
-    func getAuthorizationStatus(completion: @escaping (UNAuthorizationStatus) -> Void) {
-        center.getNotificationSettings { settings in
-            completion(settings.authorizationStatus)
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            center.getNotificationSettings { settings in
+                continuation.resume(returning: settings.authorizationStatus)
+            }
         }
     }
 
-    func requestAuthorization(
-        options: UNAuthorizationOptions,
-        completion: @escaping (Bool, Error?) -> Void
-    ) {
-        center.requestAuthorization(options: options, completionHandler: completion)
+    func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool {
+        try await withCheckedThrowingContinuation { continuation in
+            center.requestAuthorization(options: options) { granted, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: granted)
+                }
+            }
+        }
     }
 
-    func add(_ request: UNNotificationRequest, completion: @escaping (Error?) -> Void) {
-        center.add(request, withCompletionHandler: completion)
+    func add(_ request: UNNotificationRequest) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            center.add(request) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
     }
 }
 
-protocol NativeNotificationServicing: AnyObject {
-    func getPermission(completion: @escaping (DesktopNotificationPermission) -> Void)
-    func requestPermission(
-        completion: @escaping (Result<DesktopNotificationPermission, Error>) -> Void
-    )
-    func show(
-        sessionID: String,
-        title: String,
-        body: String,
-        completion: @escaping (Result<Void, Error>) -> Void
-    )
+/// macOS の通知（spec: notifications「Delivery and activation」「User-initiated authorization」）。
+public protocol NativeNotificationServicing: AnyObject, Sendable {
+    /// 今の許可の状態。
+    func permission() async -> DesktopNotificationPermission
+    /// 許可を求める（設定画面のボタンからだけ呼ぶ）。終わったら新しい状態を返す。
+    func requestPermission() async throws -> DesktopNotificationPermission
+    /// 通知を出す。許可されていなければ投げる。
+    func show(sessionID: String, title: String, body: String) async throws
 }
 
-enum NativeNotificationServiceError: LocalizedError {
+public enum NativeNotificationServiceError: LocalizedError, Equatable {
     case authorizationFailed(String)
     case permissionNotGranted(DesktopNotificationPermission)
     case schedulingFailed(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .authorizationFailed(let message):
             return "notification authorization failed: \(message)"
@@ -304,82 +316,102 @@ enum NativeNotificationServiceError: LocalizedError {
     }
 }
 
-final class NativeNotificationService: NativeNotificationServicing {
-    private let center: UserNotificationCenterClient
-    private let makeIdentifier: () -> String
+/// `UNUserNotificationCenter` で通知を出す。許可は `.alert` だけを求め、音は鳴らさない。
+/// 通知の `userInfo["sid"]` にセッションの ID を入れる（クリックしたときにそのタブを選ぶため）。
+public final class NativeNotificationService: NativeNotificationServicing, @unchecked Sendable {
+    /// 通知の identifier の接頭辞（WebTabinal.app の `webtabinal-` と区別する）。
+    public static let identifierPrefix = "tabghostty-"
+
+    private let center: any UserNotificationCenterClient
+    private let makeIdentifier: @Sendable () -> String
 
     init(
-        center: UserNotificationCenterClient,
-        makeIdentifier: @escaping () -> String = {
-            "webtabinal-\(UUID().uuidString)"
+        center: any UserNotificationCenterClient,
+        makeIdentifier: @escaping @Sendable () -> String = {
+            "\(NativeNotificationService.identifierPrefix)\(UUID().uuidString)"
         }
     ) {
         self.center = center
         self.makeIdentifier = makeIdentifier
     }
 
-    func getPermission(completion: @escaping (DesktopNotificationPermission) -> Void) {
-        center.getAuthorizationStatus { status in
-            completion(desktopNotificationPermission(for: status))
+    /// このプロセスで使う通知。`UNUserNotificationCenter` はバンドルの外（`swift run`）では使えない（落ちる）ので、
+    /// `Bundle.main.bundleIdentifier` が無ければ、通知を出さないもの（許可の状態は unsupported）を返す。
+    public static func forCurrentProcess(bundle: Bundle = .main) -> any NativeNotificationServicing {
+        guard bundle.bundleIdentifier != nil else {
+            return UnavailableNotificationService()
         }
+        return NativeNotificationService(center: SystemUserNotificationCenterClient(center: .current()))
     }
 
-    func requestPermission(
-        completion: @escaping (Result<DesktopNotificationPermission, Error>) -> Void
-    ) {
-        center.requestAuthorization(options: [.alert]) { _, error in
-            if let error {
-                completion(.failure(NativeNotificationServiceError.authorizationFailed(error.localizedDescription)))
-                return
-            }
-            self.getPermission { permission in
-                completion(.success(permission))
-            }
-        }
+    public func permission() async -> DesktopNotificationPermission {
+        desktopNotificationPermission(for: await center.authorizationStatus())
     }
 
-    func show(
-        sessionID: String,
-        title: String,
-        body: String,
-        completion: @escaping (Result<Void, Error>) -> Void
-    ) {
-        getPermission { permission in
-            guard permission == .granted else {
-                completion(.failure(NativeNotificationServiceError.permissionNotGranted(permission)))
-                return
-            }
+    public func requestPermission() async throws -> DesktopNotificationPermission {
+        do {
+            _ = try await center.requestAuthorization(options: [.alert])
+        } catch {
+            throw NativeNotificationServiceError.authorizationFailed(error.localizedDescription)
+        }
+        return await permission()
+    }
 
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.userInfo = ["sid": sessionID]
-            content.sound = nil
-            let request = UNNotificationRequest(
-                identifier: self.makeIdentifier(),
-                content: content,
-                trigger: nil
-            )
-            self.center.add(request) { error in
-                if let error {
-                    completion(.failure(NativeNotificationServiceError.schedulingFailed(error.localizedDescription)))
-                } else {
-                    completion(.success(()))
-                }
-            }
+    public func show(sessionID: String, title: String, body: String) async throws {
+        let permission = await permission()
+        guard permission == .granted else {
+            throw NativeNotificationServiceError.permissionNotGranted(permission)
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = ["sid": sessionID]
+        content.sound = nil
+        let request = UNNotificationRequest(identifier: makeIdentifier(), content: content, trigger: nil)
+        do {
+            try await center.add(request)
+        } catch {
+            throw NativeNotificationServiceError.schedulingFailed(error.localizedDescription)
         }
     }
 }
 
-func foregroundNotificationPresentationOptions() -> UNNotificationPresentationOptions {
+/// バンドルの外で動いているときの通知（何も出さない）。出そうとしたときに 1 回だけログを出す。
+final class UnavailableNotificationService: NativeNotificationServicing, Sendable {
+    private let logged = OSAllocatedUnfairLock(initialState: false)
+    private static let log = Logger(subsystem: "com.tabghostty.app", category: "notifications")
+
+    func permission() async -> DesktopNotificationPermission { .unsupported }
+
+    func requestPermission() async throws -> DesktopNotificationPermission { .unsupported }
+
+    func show(sessionID: String, title: String, body: String) async throws {
+        let first = logged.withLock { logged in
+            defer { logged = true }
+            return !logged
+        }
+        if first {
+            Self.log.notice("Notifications are disabled because Tabghostty is not running as an app bundle. Build it with `make app`.")
+        }
+        throw NativeNotificationServiceError.permissionNotGranted(.unsupported)
+    }
+}
+
+/// アプリが前面にあるときも、バナーと通知センターに出す（音は鳴らさない）。
+public func foregroundNotificationPresentationOptions() -> UNNotificationPresentationOptions {
     [.banner, .list]
 }
 
-final class NotificationActivationCoordinator {
-    private(set) var pendingSessionID: String?
+/// 通知のクリックで選ぶセッション。タブを選べる状態（セッション一覧を受け取った後）になるまで保留する。
+/// 保留できるのは最後の 1 つだけ（Web 版 `App.tsx` L203-211、旧 desktop と同じ）。
+public final class NotificationActivationCoordinator {
+    public private(set) var pendingSessionID: String?
     private var ready = false
 
-    func receive(sessionID: String, deliver: (String) -> Void) {
+    public init() {}
+
+    /// 通知がクリックされた。選べる状態ならすぐに渡し、そうでなければ保留する。
+    public func receive(sessionID: String, deliver: (String) -> Void) {
         if ready {
             deliver(sessionID)
         } else {
@@ -387,10 +419,16 @@ final class NotificationActivationCoordinator {
         }
     }
 
-    func markReady(deliver: (String) -> Void) {
+    /// 選べる状態になった。保留していたものがあれば 1 回だけ渡す。
+    public func markReady(deliver: (String) -> Void) {
         ready = true
         guard let pendingSessionID else { return }
         self.pendingSessionID = nil
         deliver(pendingSessionID)
+    }
+
+    /// 選べない状態に戻った（接続し直していて、まだセッション一覧が無い）。
+    public func markNotReady() {
+        ready = false
     }
 }

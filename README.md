@@ -47,6 +47,9 @@ open build/Tabghostty.app
 - バンドル ID は `com.tabghostty.app` で、WebTabinal.app（`com.webtabinal.app`）とは別のアプリとして同時に動かせます。
 - 署名は ad-hoc です。
 - すでに別のデーモン（たとえば WebTabinal.app が起動したもの）が動いていれば、それにつなぎます。同梱したデーモンに入れ替えたいときは、先に `pkill -f 'webtabinal-daemon serve'` で止めてください（セッションも終了します）。
+- macOS の通知（コマンドの完了、エージェントの待ち）は `.app` として起動したときだけ出ます（`UNUserNotificationCenter` の制約）。`swift run` では通知は無効になり、設定画面の「通知」には「この環境ではシステム通知を利用できません」と出ます（未読ドットと Dock のバッジは付きます）。通知の動作は `make app` で作った `.app` で確かめてください。
+- 通知の許可は、設定画面（Command-, またはサイドバーの「設定」）の「通知」にある「通知を許可」から求めます。自動では求めません。
+- ブラウザ版と Tabghostty の両方で通知を許可していると、同じイベントで通知が 2 回出ます。Tabghostty を使うときは、ブラウザ版の通知を無効にしてください。
 
 ### `swift run` で動かす
 

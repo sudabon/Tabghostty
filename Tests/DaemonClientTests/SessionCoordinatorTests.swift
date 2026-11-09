@@ -77,20 +77,65 @@ final class MockDaemon: @unchecked Sendable {
     }
 }
 
+/// クリップボードへの書き込みを記録する。
+final class RecordingClipboard: TerminalClipboard, @unchecked Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: [String]())
+    var writes: [String] { state.withLock { $0 } }
+    func write(_ text: String) { state.withLock { $0.append(text) } }
+}
+
 /// REST の代わり。呼ばれた操作を記録する。
 final class MockSessionAPI: SessionAPI, @unchecked Sendable {
+    struct Failure: Error, LocalizedError {
+        var message: String
+        var errorDescription: String? { message }
+    }
+
     let calls = OSAllocatedUnfairLock(initialState: [String]())
     var onCreate: @Sendable () -> SessionInfo = { SessionInfo(id: "created") }
     var onRestart: @Sendable (String) -> SessionInfo = { _ in SessionInfo(id: "restarted") }
+    var onDuplicate: @Sendable (String) -> SessionInfo = { _ in SessionInfo(id: "duplicated") }
+    /// 失敗させる操作（`calls` に記録する名前の先頭。"mute" など）。
+    var failing: Set<String> = []
+
+    var recorded: [String] { calls.withLock { $0 } }
+
+    private func record(_ call: String, kind: String) throws {
+        calls.withLock { $0.append(call) }
+        if failing.contains(kind) { throw Failure(message: "\(kind) failed") }
+    }
 
     func createSession(cwd: String?) async throws -> SessionInfo {
-        calls.withLock { $0.append("create") }
+        try record("create", kind: "create")
         return onCreate()
     }
 
     func restartSession(id: String) async throws -> SessionInfo {
-        calls.withLock { $0.append("restart:\(id)") }
+        try record("restart:\(id)", kind: "restart")
         return onRestart(id)
+    }
+
+    func duplicateSession(id: String) async throws -> SessionInfo {
+        try record("duplicate:\(id)", kind: "duplicate")
+        return onDuplicate(id)
+    }
+
+    func deleteSession(id: String) async throws {
+        try record("delete:\(id)", kind: "delete")
+    }
+
+    func updateSessionMemo(id: String, memo: String) async throws -> SessionInfo {
+        try record("memo:\(id):\(memo)", kind: "memo")
+        return SessionInfo(id: id, memo: memo)
+    }
+
+    func setSessionNotificationsMuted(id: String, muted: Bool) async throws -> SessionInfo {
+        try record("mute:\(id):\(muted)", kind: "mute")
+        return SessionInfo(id: id, notificationsMuted: muted)
+    }
+
+    func reorderSessions(ids: [String]) async throws {
+        try record("order:\(ids.joined(separator: ","))", kind: "order")
     }
 }
 
@@ -99,10 +144,14 @@ final class MockSessionAPI: SessionAPI, @unchecked Sendable {
 @Suite(.serialized) struct SessionCoordinatorTests {
     private let grid = TerminalController.GridSize(cols: 100, rows: 30, cellWidthPx: 16, cellHeightPx: 34)
 
-    private func makeCoordinator(port: Int, api: any SessionAPI = MockSessionAPI()) -> SessionCoordinator {
+    private func makeCoordinator(
+        port: Int,
+        api: any SessionAPI = MockSessionAPI(),
+        clipboard: (any TerminalClipboard)? = nil
+    ) -> SessionCoordinator {
         let connection = WSConnection(port: port, token: "token", sleep: { _ in try await Task.sleep(for: .milliseconds(20)) })
         let coordinator = SessionCoordinator(connection: connection, api: api) { sid, sink in
-            try TerminalController(sid: sid, maxScrollback: 1000, colors: nil, sink: sink)
+            try TerminalController(sid: sid, maxScrollback: 1000, colors: nil, sink: sink, clipboard: clipboard)
         }
         coordinator.viewGrid = grid
         return coordinator
@@ -163,6 +212,32 @@ final class MockSessionAPI: SessionAPI, @unchecked Sendable {
         let input = daemon.server.receivedObjects.last
         #expect(input?["t"] as? String == "input")
         #expect((input?["data"] as? String).flatMap { Data(base64Encoded: $0) } == Data("\u{1b}[?62;22c".utf8))
+    }
+
+    // spec: terminal-clipboard「OSC 52 clipboard access」— Scenario: Replayed clipboard write / Read refused / Remote copy
+    @Test func osc52WritesOnlyWhenLiveAndReadsAreNeverAnswered() async throws {
+        let history = Data("from history".utf8).base64EncodedString()
+        let daemon = try MockDaemon(sessions: [MockDaemon.session("s1")]) { sid, _ in
+            [MockDaemon.replay(sid, "\u{1b}]52;c;\(history)\u{07}\u{1b}]52;c;?\u{07}$ ", done: true)]
+        }
+        try await daemon.start()
+        defer { daemon.stop() }
+        let clipboard = RecordingClipboard()
+        let coordinator = makeCoordinator(port: daemon.server.port, clipboard: clipboard)
+        await coordinator.start()
+        defer { Task { await coordinator.stop() } }
+
+        #expect(await waitUntil { self.types(daemon) == ["attach", "resize"] })
+        try await Task.sleep(for: .milliseconds(100))
+        // replay の中の書き込みは pasteboard を変えず、読み取りには応答しない。
+        #expect(clipboard.writes.isEmpty)
+        #expect(types(daemon) == ["attach", "resize"])
+
+        daemon.server.sendToLatest(json: MockDaemon.output("s1", "\u{1b}]52;c;?\u{07}\u{1b}]52;c;\(Data("hello".utf8).base64EncodedString())\u{07}"))
+        #expect(await waitUntil { clipboard.writes == ["hello"] })
+        try await Task.sleep(for: .milliseconds(100))
+        // live でも読み取りには応答しない（input フレームを送らない）。
+        #expect(types(daemon) == ["attach", "resize"])
     }
 
     // Requirement: Recover from attach overflow — Scenario: Overflow during heavy output

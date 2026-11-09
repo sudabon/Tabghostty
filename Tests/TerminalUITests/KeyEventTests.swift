@@ -134,6 +134,14 @@ final class RecordingSink: TerminalFrameSink, @unchecked Sendable {
         }
     }
 
+    /// 送ったフレーム（順番どおり）。
+    var allFrames: [TerminalOutgoingFrame] { frames.withLock { $0 } }
+
+    /// input フレームの送り先。
+    var inputSIDs: [String] {
+        allFrames.compactMap { if case .input(let sid, _) = $0 { return sid } else { return nil } }
+    }
+
     func removeAll() { frames.withLock { $0.removeAll() } }
 
     func enqueue(_ frame: TerminalOutgoingFrame) -> Bool {

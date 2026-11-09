@@ -80,4 +80,20 @@ import Testing
         #expect(config.display.scrollbackLines == 10_000)
         #expect(config.display.colorScheme == .system)
     }
+
+    // phase2 design D7: 入力の設定（shift_enter_newline と copy_on_select）。
+    @Test func inputSettingsAreReadWithDefaults() throws {
+        let defaults = try parse(#"{"auth_token":"t"}"#)
+        #expect(defaults.display.shiftEnterNewline == true)
+        #expect(defaults.display.copyOnSelect == false)
+
+        let changed = try parse(#"{"shift_enter_newline":false,"copy_on_select":true}"#)
+        #expect(changed.display.shiftEnterNewline == false)
+        #expect(changed.display.copyOnSelect == true)
+
+        // 真偽値でなければ既定値にする。
+        let invalid = try parse(#"{"shift_enter_newline":0,"copy_on_select":"yes"}"#)
+        #expect(invalid.display.shiftEnterNewline == true)
+        #expect(invalid.display.copyOnSelect == false)
+    }
 }

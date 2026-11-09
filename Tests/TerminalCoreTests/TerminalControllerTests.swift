@@ -150,9 +150,9 @@ import Testing
         await controller.attach()
         controller.enqueueKey(key("x", keyCode: 0x07))
         try await Task.sleep(for: .milliseconds(50))
-        await controller.flushKeys()
+        await controller.flushInput()
         await controller.receiveReplay([], done: true)
-        await controller.flushKeys()
+        await controller.flushInput()
         #expect(sink.inputFrames.isEmpty)
     }
 
@@ -174,7 +174,7 @@ import Testing
         sink.connected = true
         await controller.attach()
         await controller.receiveReplay([], done: true)
-        await controller.flushKeys()
+        await controller.flushInput()
         #expect(sink.inputFrames.isEmpty)
         #expect(sink.frames == [.attach(sid: "s1")])
     }

@@ -62,7 +62,7 @@ public struct KeyInput: Equatable, Sendable {
     ///   - charactersIgnoringModifiers: `NSEvent.charactersIgnoringModifiers`（Shift だけは反映される）
     ///   - unshiftedCharacters: `NSEvent.characters(byApplyingModifiers: [])`。取れなければ nil
     ///   - modifiers: 押されている修飾キー
-    ///   - isRepeat: `NSEvent.isARepeat`
+    ///   - action: 押した / 押し続けている（`NSEvent.isARepeat`）/ 離した
     /// - Returns: 送るものが無いキー（物理キーも文字も不明）なら nil
     public static func mac(
         keyCode: UInt16,
@@ -70,20 +70,22 @@ public struct KeyInput: Equatable, Sendable {
         charactersIgnoringModifiers: String?,
         unshiftedCharacters: String?,
         modifiers: Modifiers,
-        isRepeat: Bool = false
+        action: Action = .press
     ) -> KeyInput? {
         let key = macKeyTable[keyCode] ?? GHOSTTY_KEY_UNIDENTIFIED
 
         // Ctrl を押していると `characters` は制御文字になっているので、変換前の文字を使う。
         let rawText = modifiers.contains(.control) ? charactersIgnoringModifiers : characters
-        let text = sanitizedText(rawText ?? "")
+        let keyText = sanitizedText(rawText ?? "")
+        // 離したときは文字を送らない（kitty keyboard protocol でも、文字は押したときだけ報告する）。
+        let text = action == .release ? "" : keyText
 
         if key == GHOSTTY_KEY_UNIDENTIFIED && text.isEmpty {
             return nil
         }
 
         var consumed: Modifiers = []
-        if !text.isEmpty {
+        if !keyText.isEmpty {
             // 文字の生成に使われた Shift / Option は、キーエンコーダに「消費済み」と伝える。
             consumed = modifiers.intersection([.shift, .option])
             if modifiers.contains(.control) {
@@ -96,7 +98,7 @@ public struct KeyInput: Equatable, Sendable {
 
         return KeyInput(
             key: key,
-            action: isRepeat ? .repeat : .press,
+            action: action,
             modifiers: modifiers,
             consumedModifiers: consumed,
             text: text,
@@ -215,4 +217,14 @@ private let macKeyTable: [UInt16: GhosttyKey] = [
     0x73: GHOSTTY_KEY_HOME, 0x74: GHOSTTY_KEY_PAGE_UP, 0x75: GHOSTTY_KEY_DELETE, 0x77: GHOSTTY_KEY_END,
     0x79: GHOSTTY_KEY_PAGE_DOWN,
     0x7B: GHOSTTY_KEY_ARROW_LEFT, 0x7C: GHOSTTY_KEY_ARROW_RIGHT, 0x7D: GHOSTTY_KEY_ARROW_DOWN, 0x7E: GHOSTTY_KEY_ARROW_UP,
+    // 修飾キー（`flagsChanged`。kitty keyboard protocol の「すべてのキーを報告する」で使う）
+    0x38: GHOSTTY_KEY_SHIFT_LEFT, 0x3C: GHOSTTY_KEY_SHIFT_RIGHT, 0x3B: GHOSTTY_KEY_CONTROL_LEFT,
+    0x3E: GHOSTTY_KEY_CONTROL_RIGHT, 0x3A: GHOSTTY_KEY_ALT_LEFT, 0x3D: GHOSTTY_KEY_ALT_RIGHT,
+    0x37: GHOSTTY_KEY_META_LEFT, 0x36: GHOSTTY_KEY_META_RIGHT, 0x39: GHOSTTY_KEY_CAPS_LOCK,
+]
+
+/// 修飾キーの仮想キーコードと、そのキーが立てる修飾キーのフラグ。
+let macModifierKeys: [UInt16: KeyInput.Modifiers] = [
+    0x38: .shift, 0x3C: .shift, 0x3B: .control, 0x3E: .control,
+    0x3A: .option, 0x3D: .option, 0x37: .command, 0x36: .command, 0x39: .capsLock,
 ]

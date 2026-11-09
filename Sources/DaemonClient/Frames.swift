@@ -12,6 +12,8 @@ public struct SessionInfo: Equatable, Sendable, Decodable, Identifiable {
     public var exit: Int?
     public var integrated: Bool
     public var memo: String
+    /// このタブだけ通知のバナーを出さない（無ければ false）。
+    public var notificationsMuted: Bool
     public var runMs: Int64?
     public var agent: String
     public var agentState: String
@@ -30,6 +32,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable, Identifiable {
         exit: Int? = nil,
         integrated: Bool = false,
         memo: String = "",
+        notificationsMuted: Bool = false,
         runMs: Int64? = nil,
         agent: String = "",
         agentState: String = "",
@@ -45,6 +48,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable, Identifiable {
         self.exit = exit
         self.integrated = integrated
         self.memo = memo
+        self.notificationsMuted = notificationsMuted
         self.runMs = runMs
         self.agent = agent
         self.agentState = agentState
@@ -55,6 +59,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, order, cwd, command, state, exit, integrated, memo, agent
+        case notificationsMuted = "notifications_muted"
         case runMs = "run_ms"
         case agentState = "agent_state"
         case agentStateSince = "agent_state_since"
@@ -72,6 +77,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable, Identifiable {
         exit = try c.decodeIfPresent(Int.self, forKey: .exit)
         integrated = try c.decodeIfPresent(Bool.self, forKey: .integrated) ?? false
         memo = try c.decodeIfPresent(String.self, forKey: .memo) ?? ""
+        notificationsMuted = try c.decodeIfPresent(Bool.self, forKey: .notificationsMuted) ?? false
         runMs = try c.decodeIfPresent(Int64.self, forKey: .runMs)
         agent = try c.decodeIfPresent(String.self, forKey: .agent) ?? ""
         agentState = try c.decodeIfPresent(String.self, forKey: .agentState) ?? ""

@@ -1,18 +1,31 @@
 import AppKit
 import DaemonClient
+import DesktopSupport
+import Shell
 import TerminalCore
 import TerminalUI
+import UserNotifications
 
 /// アプリ全体（spec: app-shell）。
 ///
 /// 起動の手順: config.json を読む → デーモンを検出（無ければ同梱のものを起動）→ トークンを読む →
-/// `GET /api/config` で表示の設定を読む → WebSocket で接続し、アクティブセッションを表示する。
+/// `GET /api/config` で設定を読む → WebSocket で接続し、サイドバーとアクティブセッションを表示する。
 /// どこかで失敗したら、エラー文と再試行ボタンを出す。ウィンドウを閉じるとアプリは終了するが、デーモンは残す。
+///
+/// 設定は `ConfigStore` に置き、アプリが前面に来たとき・設定画面を開いたとき・再接続したときに読み直す
+/// （phase4 design D4）。通知のクリックは `NotificationActivationCoordinator` でタブの選択につなぐ（design D2）。
 @MainActor
-public final class AppDelegate: NSObject, NSApplicationDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, TabMenuActions {
     private var windowController: MainWindowController?
     private var coordinator: SessionCoordinator?
+    private var shell: TabShellController?
+    private var settingsWindow: SettingsWindowController?
     private var startupTask: Task<Void, Never>?
+    private var appObservers: [NSObjectProtocol] = []
+    /// 通知（`.app` として起動していなければ、何も出さないもの）。
+    private let notificationService = NativeNotificationService.forCurrentProcess()
+    /// 通知のクリックで選ぶタブ（セッション一覧を受け取るまで保留する）。
+    private let activation = NotificationActivationCoordinator()
 
     public override init() {
         super.init()
@@ -32,6 +45,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = AppMenu.make()
+        // 通知のクリックでアプリが起動したときにも受け取れるよう、起動を終える前に delegate にする。
+        // `UNUserNotificationCenter` はバンドルの外では使えない（落ちる）。
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+        }
+        appObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applicationDidBecomeActive() }
+        })
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
@@ -43,12 +66,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        // 最後のウィンドウを閉じたら終了する。デーモンとセッションは止めない。
+        // 最後のウィンドウ（メインウィンドウ）を閉じたら終了する。デーモンとセッションは止めない。
         true
     }
 
     public func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
+    }
+
+    /// アプリが前面に来た: ブラウザ版で変えた設定を拾い、設定画面の通知の許可の表示を更新する。
+    private func applicationDidBecomeActive() {
+        guard let shell else { return }
+        Task { await shell.config.reload() }
+        settingsWindow?.refreshNotificationPermission()
     }
 
     // MARK: - 起動
@@ -57,6 +87,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         startupTask?.cancel()
         let previous = coordinator
         coordinator = nil
+        shell = nil
+        settingsWindow?.close()
+        settingsWindow = nil
+        activation.markNotReady()
+        NSApp.dockTile.badgeLabel = nil
         windowController?.showConnecting()
         startupTask = Task { [weak self] in
             await previous?.stop()
@@ -80,40 +115,55 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         try Task.checkCancellation()
 
         // デーモンを初めて起動したときは、トークンがこの時点で書き込まれる。
-        let config = try DaemonConfig.load()
-        let token = try config.requireAuthToken()
-        let rest = RESTClient(port: config.port, token: token)
-        let display = try await rest.fetchDisplaySettings()
+        let daemonConfig = try DaemonConfig.load()
+        let token = try daemonConfig.requireAuthToken()
+        let rest = RESTClient(port: daemonConfig.port, token: token)
+        let settings = try await rest.fetchSettings()
         try Task.checkCancellation()
 
-        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        // 配色は起動時に決めて固定する（設定や system の変化への追従は Phase 4）。
-        let palette = Palette.resolve(colorScheme: display.colorScheme.rawValue, systemIsDark: isDark)
-        let terminalView = TerminalView(fontFamily: display.fontFamily, fontSize: CGFloat(display.fontSize), palette: palette)
+        let config = ConfigStore(settings: settings, api: rest)
+        let editor = ConfigEditor(store: config, api: rest)
+        let appearance = AppearanceController(scheme: settings.display.colorScheme)
+        let display = settings.display
+        let terminalView = TerminalView(
+            fontFamily: display.fontFamily, fontSize: CGFloat(display.fontSize), palette: appearance.theme.palette
+        )
+        let clipboard = PasteboardClipboard()
 
-        let scrollback = display.scrollbackLines
-        let colors = palette.terminalColors
+        // 新しく作る端末には、その時点の `scrollback_lines` と配色を使う。
         let coordinator = SessionCoordinator(
-            connection: WSConnection(port: config.port, token: token),
+            connection: WSConnection(port: daemonConfig.port, token: token),
             api: rest
-        ) { [weak terminalView] sid, sink in
+        ) { [weak terminalView, weak config, weak appearance] sid, sink in
             let grid = terminalView?.appliedGrid
             return try TerminalController(
                 sid: sid,
                 cols: grid?.cols ?? 80,
                 rows: grid?.rows ?? 24,
-                maxScrollback: scrollback,
-                colors: colors,
-                sink: sink
+                maxScrollback: config?.settings.display.scrollbackLines ?? display.scrollbackLines,
+                colors: (appearance?.theme.palette ?? Palette.dark).terminalColors,
+                sink: sink,
+                clipboard: clipboard
             )
         }
-        wire(coordinator, to: terminalView)
+        let shell = TabShellController(
+            coordinator: coordinator,
+            terminalView: terminalView,
+            config: config,
+            editor: editor,
+            appearance: appearance,
+            notificationService: notificationService,
+            imageUploader: rest,
+            dockTile: NSApp.dockTile
+        )
+        wire(coordinator, shell: shell, terminalView: terminalView)
         self.coordinator = coordinator
-        windowController?.showTerminal(terminalView, background: palette.background)
+        self.shell = shell
+        windowController?.showShell(shell)
         await coordinator.start()
     }
 
-    private func wire(_ coordinator: SessionCoordinator, to terminalView: TerminalView) {
+    private func wire(_ coordinator: SessionCoordinator, shell: TabShellController, terminalView: TerminalView) {
         terminalView.onGridChange = { [weak coordinator] grid in
             coordinator?.viewGrid = grid
         }
@@ -122,20 +172,114 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let controller = coordinator?.activeController else { return }
             Task { await controller.resendViewSize() }
         }
-        coordinator.onActiveControllerChange = { [weak terminalView] controller in
-            terminalView?.controller = controller
-        }
         coordinator.onTransientMessage = { [weak self] message in
             self?.windowController?.showToast(message)
         }
-        coordinator.store.onChange = { [weak self, weak coordinator] in
+        var everConnected = false
+        coordinator.onConnectionChange = { [weak shell] connected in
+            guard connected else { return }
+            // 再接続したら設定を読み直す（切れている間にブラウザ版で変えたかもしれない）。
+            if everConnected, let shell {
+                Task { await shell.config.reload() }
+            }
+            everConnected = true
+        }
+        shell.onTransientMessage = { [weak self] message in
+            self?.windowController?.showToast(message)
+        }
+        shell.onStoreChange = { [weak self, weak coordinator] in
             guard let coordinator else { return }
             self?.windowController?.updateTitle(cwd: coordinator.store.activeSession?.cwd)
+        }
+        shell.onPendingChordChange = { [weak self] text in
+            self?.windowController?.showChordIndicator(text)
+        }
+        shell.onThemeChange = { [weak self] theme in
+            self?.windowController?.applyTheme(theme)
+            self?.settingsWindow?.applyTheme(theme)
+        }
+        shell.onOpenSettings = { [weak self] in
+            self?.openSettings(nil)
+        }
+        shell.onSessionsReady = { [weak self] in
+            self?.activation.markReady { sid in self?.shell?.select(sid) }
+        }
+        shell.onQuitRequested = {
+            // 最後のタブを閉じたら終了する。デーモンとセッションは止めない。
+            NSApp.terminate(nil)
         }
         if let grid = terminalView.appliedGrid {
             coordinator.viewGrid = grid
         }
     }
+
+    // MARK: - 通知のクリック（spec: notifications「Delivery and activation」、phase4 design D2）
+
+    /// 通知がクリックされた: アプリを前面に出してウィンドウを見せ、そのセッションがまだあれば選ぶ。
+    /// セッション一覧を受け取る前なら、受け取ってから選ぶ。
+    func activate(fromNotificationFor sid: String?) {
+        NSApp.activate()
+        if let window = windowController?.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
+        guard let sid else { return }
+        activation.receive(sessionID: sid) { [weak self] sid in
+            self?.shell?.select(sid)
+        }
+    }
+
+    // MARK: - 設定画面（spec: settings-window）
+
+    /// 設定画面を開く（Command-, とサイドバーの「設定」）。開くたびに「外観」を選び、設定を読み直す。
+    @objc public func openSettings(_ sender: Any?) {
+        guard let shell else { return }
+        let controller = settingsWindow ?? SettingsWindowController(
+            config: shell.config,
+            editor: shell.editor,
+            notifications: notificationService,
+            theme: shell.appearance.theme
+        )
+        settingsWindow = controller
+        controller.present()
+        Task { await shell.config.reload() }
+    }
+
+    // MARK: - メニューの操作（spec: keyboard-shortcuts「Command shortcuts」、tab-sidebar「Sidebar collapse」）
+
+    @objc public func newTab(_ sender: Any?) {
+        shell?.createTab()
+    }
+
+    @objc public func selectTabFromMenu(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        // 無い位置なら何もしない。
+        shell?.selectTab(atPosition: item.tag)
+    }
+
+    @objc public func toggleTabSidebar(_ sender: Any?) {
+        shell?.toggleSidebar()
+    }
+
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(newTab(_:)), #selector(toggleTabSidebar(_:)), #selector(openSettings(_:)):
+            return shell != nil
+        case #selector(selectTabFromMenu(_:)):
+            return shell?.canSelectTab(atPosition: menuItem.tag) ?? false
+        default:
+            return true
+        }
+    }
+}
+
+/// メニューから送るタブの操作（target を nil にして、レスポンダチェーンの `AppDelegate` に届ける）。
+@MainActor
+@objc protocol TabMenuActions {
+    func newTab(_ sender: Any?)
+    func selectTabFromMenu(_ sender: Any?)
+    func toggleTabSidebar(_ sender: Any?)
+    func openSettings(_ sender: Any?)
 }
 
 /// アプリメニュー（spec: app-shell「Application menu」）。
@@ -155,6 +299,9 @@ enum AppMenu {
             keyEquivalent: ""
         )
         appMenu.addItem(.separator())
+        // 設定画面（spec: settings-window「Settings window layout」）。
+        appMenu.addItem(withTitle: "設定…", action: #selector(TabMenuActions.openSettings(_:)), keyEquivalent: ",")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(
             withTitle: "Hide Others",
@@ -169,6 +316,82 @@ enum AppMenu {
         )
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        mainMenu.addItem(makeFileItem())
+        mainMenu.addItem(makeEditItem())
+        mainMenu.addItem(makeViewItem())
+        mainMenu.addItem(makeWindowItem())
         return mainMenu
+    }
+
+    /// File メニュー（Command-N で新しいタブ）。
+    static func makeFileItem() -> NSMenuItem {
+        let fileItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        fileItem.submenu = fileMenu
+        fileMenu.addItem(withTitle: "新規タブ", action: #selector(TabMenuActions.newTab(_:)), keyEquivalent: "n")
+        return fileItem
+    }
+
+    /// View メニュー（サイドバーの表示・非表示。キー等価物なし）。
+    static func makeViewItem() -> NSMenuItem {
+        let viewItem = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        viewMenu.addItem(withTitle: "サイドバーを表示/隠す", action: #selector(TabMenuActions.toggleTabSidebar(_:)), keyEquivalent: "")
+        return viewItem
+    }
+
+    /// Window メニュー（Command-1〜9 で、その位置のタブを選ぶ）。
+    static func makeWindowItem() -> NSMenuItem {
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        for position in 1...9 {
+            let item = windowMenu.addItem(
+                withTitle: "タブ \(position)",
+                action: #selector(TabMenuActions.selectTabFromMenu(_:)),
+                keyEquivalent: String(position)
+            )
+            item.tag = position
+        }
+        return windowItem
+    }
+
+    /// Edit メニュー（spec: terminal-clipboard「Edit menu」）。
+    ///
+    /// target を nil にして first responder に送る。端末にフォーカスがあれば `TerminalView` の copy / paste、
+    /// テキストフィールドにフォーカスがあれば、フィールドの標準のコピーとペーストになる。
+    static func makeEditItem() -> NSMenuItem {
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        return editItem
+    }
+}
+
+
+// MARK: - UNUserNotificationCenterDelegate
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// アプリが前面にあるときも、バナーと通知センターに出す。
+    public nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        foregroundNotificationPresentationOptions()
+    }
+
+    /// 通知をクリックした。
+    public nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let sid = response.notification.request.content.userInfo["sid"] as? String
+        await MainActor.run {
+            self.activate(fromNotificationFor: sid)
+        }
     }
 }

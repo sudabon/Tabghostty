@@ -6,7 +6,7 @@ public enum ColorSchemeSetting: String, Sendable, Equatable {
     case light, dark, system
 }
 
-/// 表示系の設定（config.json と `GET /api/config` の同じ名前のキー）。
+/// 端末の表示と入力の設定（config.json と `GET /api/config` の同じ名前のキー）。
 public struct DisplaySettings: Equatable, Sendable {
     public static let defaultFontFamily = "Menlo, Monaco, 'Courier New', monospace"
 
@@ -14,14 +14,27 @@ public struct DisplaySettings: Equatable, Sendable {
     public var fontSize: Double = 14
     public var scrollbackLines: Int = 10_000
     public var colorScheme: ColorSchemeSetting = .system
+    /// `shift_enter_newline`: Shift+Enter で `ESC CR` を送る（既定は true。webtabinal の既定と同じ）。
+    public var shiftEnterNewline = true
+    /// `copy_on_select`: 選択を終えたらコピーする（既定は false）。
+    public var copyOnSelect = false
 
     public init() {}
 
-    public init(fontFamily: String, fontSize: Double, scrollbackLines: Int, colorScheme: ColorSchemeSetting) {
+    public init(
+        fontFamily: String,
+        fontSize: Double,
+        scrollbackLines: Int,
+        colorScheme: ColorSchemeSetting,
+        shiftEnterNewline: Bool = true,
+        copyOnSelect: Bool = false
+    ) {
         self.fontFamily = fontFamily
         self.fontSize = fontSize
         self.scrollbackLines = scrollbackLines
         self.colorScheme = colorScheme
+        self.shiftEnterNewline = shiftEnterNewline
+        self.copyOnSelect = copyOnSelect
     }
 
     /// JSON のオブジェクトから読む。無い・不正な値は既定値にする。未知のキーは無視する。
@@ -39,10 +52,22 @@ public struct DisplaySettings: Equatable, Sendable {
         if let scheme = json["color_scheme"] as? String, let value = ColorSchemeSetting(rawValue: scheme) {
             colorScheme = value
         }
+        if let value = Self.bool(json["shift_enter_newline"]) {
+            shiftEnterNewline = value
+        }
+        if let value = Self.bool(json["copy_on_select"]) {
+            copyOnSelect = value
+        }
+    }
+
+    /// JSON の真偽値だけを読む（数値の 0 / 1 は真偽値として扱わない）。
+    static func bool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
     }
 
     /// 真偽値は数値として扱わない（JSON の `true` は NSNumber として読めてしまう）。
-    private static func number(_ value: Any?) -> Double? {
+    static func number(_ value: Any?) -> Double? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         return number.doubleValue
     }

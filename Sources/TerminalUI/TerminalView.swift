@@ -9,19 +9,61 @@ import TerminalCore
 ///   display link の 1 フレームにつき高々 1 回で、変化があるときだけ（design D1）。
 /// - 変化した行（カーソルの点滅ならカーソルのセル）だけを再描画する。
 /// - ビューの大きさからグリッドの大きさを求め、50 ms 変化が止まってから `onGridChange` で知らせる。
+/// - キー入力は `classifyKey` で振り分ける（phase2 design D1）。IME は `TerminalView+TextInput.swift`、
+///   マウス・スクロール・選択は `TerminalView+Mouse.swift`、コピー・ペーストは `TerminalView+Clipboard.swift`。
 @MainActor
 public final class TerminalView: NSView {
     public private(set) var fonts: FontResolver
+    /// `font_family` の値（CSS 風のカンマ区切り。`fonts.familyName` は選ばれた 1 つ）。
+    public private(set) var fontFamily: String
     public private(set) var palette: Palette
     public private(set) var metrics: CellMetrics
 
-    /// 表示するセッションの端末。差し替えると全体を描き直す。
+    /// 表示するセッションの端末。差し替えると全体を描き直す（phase3 design D1）。
+    ///
+    /// 選択範囲と viewport の位置は、各セッションの端末（ライブラリ）が持っているので、切り替えても失われない。
+    /// IME の未確定の文字列は、前の端末に預けてから、新しい端末に預けてあったものを戻す。
     public var controller: TerminalController? {
         didSet {
             guard controller !== oldValue else { return }
+            if let oldValue, hasMarkedText() {
+                oldValue.saveComposition(ComposingText(
+                    text: markedText,
+                    selectedLocation: markedSelectedRange.location,
+                    selectedLength: markedSelectedRange.length
+                ))
+            }
+            // キーボードフォーカスは、表示しているセッションのもの。
+            if reportedFocus == true {
+                oldValue?.enqueueFocus(false)
+                controller?.enqueueFocus(true)
+            }
             resetModel()
+            resetInputState()
+            if let saved = controller?.takeSavedComposition() {
+                restoreComposition(saved)
+            }
         }
     }
+
+    /// コードのプレフィックスの判定（キー入力の段階 0。phase3 design D4）。true を返したキーは端末に送らない。
+    public var keyChordHandler: ((KeyStroke) -> Bool)?
+
+    /// 入力の設定（config の `shift_enter_newline` と `copy_on_select`）。
+    public var inputSettings = TerminalInputSettings()
+    /// コピーとペーストに使う pasteboard（テストで差し替える）。
+    public var pasteboard: NSPasteboard = .general
+    /// 危険なペーストを送ってよいか、利用者に確かめる（テストで差し替える）。nil なら確認のシートを出す。
+    public var confirmUnsafePaste: ((_ text: String, _ completion: @escaping @MainActor (Bool) -> Void) -> Void)?
+    /// ペーストした・ドロップした画像を添付する（`ImageAttachService`。spec: image-attach）。
+    /// nil なら、画像は扱わない（Command-V はテキストだけをペーストする）。
+    public var imageAttachHandler: (([AttachableImage]) -> Void)?
+    /// ドロップを受け付けている間に出す枠の色（chrome トークンの accent）。
+    public var dropHighlightColor: NSColor = .controlAccentColor {
+        didSet { dropFrame.color = dropHighlightColor }
+    }
+    /// ドロップを受け付けている間に出す枠（`TerminalView+ImageDrop.swift`）。
+    let dropFrame = DropFrameView()
 
     /// グリッドのサイズが変わった（デバウンス後）。
     public var onGridChange: ((TerminalController.GridSize) -> Void)?
@@ -35,8 +77,34 @@ public final class TerminalView: NSView {
     private var cols = 0
     private var rows = 0
     private var cells: [[CellSnapshot]] = []
+    /// 行ごとの選択されている列の範囲。
+    private var rowSelections: [ClosedRange<Int>?] = []
     private var frameColors: FrameColors?
-    private var cursor: CursorSnapshot?
+    private(set) var cursor: CursorSnapshot?
+
+    // IME（`TerminalView+TextInput.swift`）
+    /// 未確定の文字列。空なら変換していない。
+    var markedText = ""
+    /// 未確定の文字列の中で選ばれている範囲（UTF-16）。
+    var markedSelectedRange = NSRange(location: 0, length: 0)
+    /// `.interpret` のキーを `interpretKeyEvents` に渡している間に、`insertText` で届いた文字列。それ以外のときは nil。
+    var insertedTexts: [String]?
+    /// `.interpret` のキーを渡している間に、未確定の文字列が変わった。
+    var markedTextChangedDuringInterpret = false
+    /// 未確定の文字列が、別のタブから戻したもの（IME はこの文字列を知らない）。
+    var isRestoredComposition = false
+    /// コードの判定で使ったキー（離したことも端末に送らない）。
+    private var chordConsumedKeyCodes: Set<UInt16> = []
+    /// 最後に報告したキーボードフォーカス。
+    var reportedFocus: Bool?
+
+    // マウス（`TerminalView+Mouse.swift`）
+    var pointerGesture = PointerGesture.none
+    var pressedButtons: Set<MouseInput.Button> = []
+    var lastDragPoint: CGPoint = .zero
+    var autoscrollTimer: Timer?
+    var scrollAccumulator = ScrollAccumulator()
+    var mouseTrackingArea: NSTrackingArea?
 
     private var displayLink: CADisplayLink?
     private var snapshotInFlight = false
@@ -54,12 +122,14 @@ public final class TerminalView: NSView {
     static let blinkInterval: TimeInterval = 0.53
 
     public init(fontFamily: String, fontSize: CGFloat, palette: Palette) {
+        self.fontFamily = fontFamily
         fonts = FontResolver(fontFamily: fontFamily, size: fontSize)
         self.palette = palette
         metrics = CellMetrics.make(font: fonts.regular, scale: NSScreen.main?.backingScaleFactor ?? 2)
         super.init(frame: .zero)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        setUpImageDrop()
     }
 
     @available(*, unavailable)
@@ -113,13 +183,18 @@ public final class TerminalView: NSView {
 
     public override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
-        focusDidChange()
+        // この時点では `window.firstResponder` はまだ変わっていないので、結果を渡す。
+        focusDidChange(isFirstResponder: accepted)
         return accepted
     }
 
     public override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        focusDidChange()
+        if resigned {
+            // 変換の途中でフォーカスを失ったら、未確定の文字列は捨てる。
+            discardMarkedText()
+        }
+        focusDidChange(isFirstResponder: !resigned)
         return resigned
     }
 
@@ -128,14 +203,88 @@ public final class TerminalView: NSView {
         window?.isKeyWindow == true && window?.firstResponder === self
     }
 
-    // MARK: - キー入力（spec: terminal-input）
+    // MARK: - キー入力（spec: terminal-input、phase2 design D1）
 
     public override func keyDown(with event: NSEvent) {
-        // Command 付きのキーはセッションに送らない（メニューのショートカットに任せる）。
-        guard !event.modifierFlags.contains(.command) else { return }
-        guard let input = KeyInput(event: event) else { return }
-        controller?.enqueueKey(input)
+        let stroke = KeyStroke(event: event, phase: .down, isComposing: hasMarkedText())
+        // 0. コード（Ctrl+J など）。端末へのキー送信より前に判定する（spec: keyboard-shortcuts）。
+        if let keyChordHandler, keyChordHandler(stroke) {
+            chordConsumedKeyCodes.insert(event.keyCode)
+            return
+        }
+        if isRestoredComposition, hasMarkedText(), handleKeyForRestoredComposition(event) {
+            restartBlink()
+            return
+        }
+        switch classifyKey(KeyStroke(event: event, phase: .down, isComposing: hasMarkedText()), settings: inputSettings.keySettings) {
+        case .ignore, .systemShortcut:
+            // Command 付きのキーはメニューのショートカットに任せ、セッションには送らない。
+            return
+        case .inputMethod:
+            // 変換中のキーは IME のもの。確定した文字列だけが insertText で届く。
+            interpretKeyEvents([event])
+        case .send(let text):
+            controller?.enqueueText(text)
+        case .encode:
+            if let input = KeyInput(event: event) {
+                controller?.enqueueKey(input)
+            }
+        case .interpret:
+            interpret(event)
+        }
         restartBlink()
+    }
+
+    /// `interpretKeyEvents` に渡し、`insertText` で届いた文字を付けてキーエンコーダに渡す
+    /// （Option で合成した文字・デッドキー・IME の変換の開始もここを通る）。
+    private func interpret(_ event: NSEvent) {
+        insertedTexts = []
+        markedTextChangedDuringInterpret = false
+        interpretKeyEvents([event])
+        let texts = insertedTexts ?? []
+        insertedTexts = nil
+        // IME が変換を始めた（デッドキーを含む）。確定するまで何も送らない。
+        guard !hasMarkedText(), !markedTextChangedDuringInterpret else { return }
+        guard !texts.isEmpty else {
+            // 文字が届かなかった（キーの割り当てでコマンドに変わったなど）。キーとしてエンコーダに渡す。
+            if let input = KeyInput(event: event) {
+                controller?.enqueueKey(input)
+            }
+            return
+        }
+        for text in texts {
+            if let input = KeyInput(event: event, text: text) {
+                controller?.enqueueKey(input)
+            } else {
+                controller?.enqueueText(text)
+            }
+        }
+    }
+
+    public override func keyUp(with event: NSEvent) {
+        if chordConsumedKeyCodes.remove(event.keyCode) != nil {
+            return
+        }
+        // 離したことは、kitty keyboard protocol で求められたときだけエンコーダが出力する。
+        let stroke = KeyStroke(event: event, phase: .up, isComposing: hasMarkedText())
+        guard classifyKey(stroke, settings: inputSettings.keySettings) == .encode, let input = KeyInput(event: event) else { return }
+        controller?.enqueueKey(input)
+    }
+
+    public override func flagsChanged(with event: NSEvent) {
+        // 修飾キーそのものを押した / 離した（kitty keyboard protocol の「すべてのキーを報告する」で使う）。
+        guard let flag = KeyInput.modifier(forKeyCode: event.keyCode) else { return }
+        let modifiers = KeyInput.Modifiers(event.modifierFlags)
+        let pressed = modifiers.contains(flag)
+        let stroke = KeyStroke(
+            phase: pressed ? .down : .up, keyCode: event.keyCode, characters: "", modifiers: modifiers, isComposing: hasMarkedText()
+        )
+        guard classifyKey(stroke, settings: inputSettings.keySettings) == .encode,
+              let input = KeyInput.mac(
+                  keyCode: event.keyCode, characters: "", charactersIgnoringModifiers: "", unshiftedCharacters: "",
+                  modifiers: modifiers, action: pressed ? .press : .release
+              ) else { return }
+        controller?.enqueueKey(input)
     }
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -150,11 +299,28 @@ public final class TerminalView: NSView {
 
     // MARK: - 設定の変更
 
-    /// 配色を差し替える。
+    /// 配色を差し替える（spec: color-scheme「Scheme applies everywhere」）。
+    ///
+    /// 端末の既定の色（fg / bg / cursor / 256 色）は、各セッションの `TerminalController.setColors` で差し替える
+    /// （スナップショットの色に反映される）。ここでは、まだスナップショットが無いときの色と選択色を変える。
     public func setPalette(_ palette: Palette) {
+        guard palette != self.palette else { return }
         self.palette = palette
         contrastCache.removeAll()
         needsDisplay = true
+    }
+
+    /// フォントを差し替える（`font_family` / `font_size`。spec: settings-window「Configuration changes take effect without restart」）。
+    /// セルの寸法を計算し直し、グリッドのサイズが変われば `onGridChange` で知らせる（全セッションに `resize` を送る）。
+    public func setFont(family: String, size: CGFloat) {
+        guard family != fontFamily || size != fonts.size else { return }
+        fontFamily = family
+        fonts = FontResolver(fontFamily: family, size: size)
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        metrics = CellMetrics.make(font: fonts.regular, scale: scale)
+        contrastCache.removeAll()
+        needsDisplay = true
+        scheduleGridUpdate()
     }
 
     // MARK: - グリッドのサイズ（spec: terminal-rendering「Grid size follows the view」）
@@ -206,6 +372,7 @@ public final class TerminalView: NSView {
         cols = 0
         rows = 0
         cells = []
+        rowSelections = []
         cursor = nil
         frameColors = nil
         needsFullSnapshot = true
@@ -219,6 +386,7 @@ public final class TerminalView: NSView {
             cols = snapshot.cols
             rows = snapshot.rows
             cells = Array(repeating: Array(repeating: .blank, count: cols), count: rows)
+            rowSelections = Array(repeating: nil, count: rows)
             redrawAll = true
         }
         if snapshot.colors != frameColors {
@@ -236,6 +404,7 @@ public final class TerminalView: NSView {
                 rowCells.removeLast(rowCells.count - cols)
             }
             cells[row.y] = rowCells
+            rowSelections[row.y] = snapshot.selections[row.y]
             dirtyRows.insert(row.y)
         }
 
@@ -259,12 +428,16 @@ public final class TerminalView: NSView {
 
     private var padding: CGFloat { GridGeometry.padding }
 
-    private func rowRect(_ y: Int) -> NSRect {
+    /// グリッドの列数・行数（最後のスナップショット。まだ無ければビューのグリッド）。
+    var gridColumns: Int { cols > 0 ? cols : appliedGrid?.cols ?? 1 }
+    var gridRows: Int { rows > 0 ? rows : appliedGrid?.rows ?? 1 }
+
+    func rowRect(_ y: Int) -> NSRect {
         // 右端の余白まで含める（列数に収まらない端数の部分も背景で塗る）。
         NSRect(x: 0, y: padding + CGFloat(y) * metrics.height, width: bounds.width, height: metrics.height)
     }
 
-    private func cellRect(x: Int, y: Int, width: Int = 1) -> NSRect {
+    func cellRect(x: Int, y: Int, width: Int = 1) -> NSRect {
         NSRect(
             x: padding + CGFloat(x) * metrics.width,
             y: padding + CGFloat(y) * metrics.height,
@@ -297,10 +470,11 @@ public final class TerminalView: NSView {
             drawCells(in: rect, context: context)
         }
         drawCursor(dirtyRects: dirtyRects, context: context)
+        drawMarkedText(dirtyRects: dirtyRects, context: context)
     }
 
-    private var defaultForeground: ColorRGB { frameColors?.foreground ?? palette.foreground }
-    private var defaultBackground: ColorRGB { frameColors?.background ?? palette.background }
+    var defaultForeground: ColorRGB { frameColors?.foreground ?? palette.foreground }
+    var defaultBackground: ColorRGB { frameColors?.background ?? palette.background }
 
     private func drawCells(in dirtyRect: NSRect, context: CGContext) {
         // 描画の範囲がビューより大きく渡されることがある（オフスクリーンの描画など）。行・列に直す前に bounds に収める。
@@ -372,6 +546,17 @@ public final class TerminalView: NSView {
             start = end + 1
         }
 
+        // 選択範囲は配色の選択色で塗る（文字の色はそのまま）。
+        if y < rowSelections.count, let selected = rowSelections[y], selected.overlaps(columns) {
+            let lower = max(selected.lowerBound, columns.lowerBound)
+            let upper = min(selected.upperBound, columns.upperBound)
+            context.setFillColor(cgColor(palette.selection))
+            context.fill(NSRect(
+                x: padding + CGFloat(lower) * metrics.width, y: rowTop,
+                width: CGFloat(upper - lower + 1) * metrics.width, height: metrics.height
+            ))
+        }
+
         // 2. 同じスタイルが続く区間ごとにグリフを描く。
         var run: [Int] = []
         var runKey: TextRunKey?
@@ -406,7 +591,7 @@ public final class TerminalView: NSView {
         drawDecorations(row, columns: columns, resolved: resolved, rowTop: rowTop, context: context)
     }
 
-    private struct TextRunKey: Equatable {
+    struct TextRunKey: Equatable {
         let font: CTFont
         let color: ColorRGB
         let faint: Bool
@@ -417,7 +602,7 @@ public final class TerminalView: NSView {
     }
 
     /// 1 つのスタイルの区間を描く。グリフは、そのグリフの元の文字があるセルの位置に置く（グリッドからずれない）。
-    private func drawText(
+    func drawText(
         _ runCells: [CellSnapshot],
         columns: [Int],
         key: TextRunKey,
@@ -612,16 +797,23 @@ public final class TerminalView: NSView {
         context.restoreGState()
     }
 
-    private func focusDidChange() {
+    /// - Parameter isFirstResponder: first responder が変わる途中なら、その結果。nil なら今の状態を読む
+    private func focusDidChange(isFirstResponder: Bool? = nil) {
         if let cursor { setNeedsDisplay(cursorRect(cursor)) }
         restartBlink()
-        if hasKeyboardFocus {
+        let focused = window?.isKeyWindow == true && (isFirstResponder ?? (window?.firstResponder === self))
+        if focused {
             onFocus?()
+        }
+        // DECSET 1004 を有効にしているプログラムに、フォーカスの変化を報告する（spec: terminal-input）。
+        if reportedFocus != focused {
+            reportedFocus = focused
+            controller?.enqueueFocus(focused)
         }
     }
 
     /// 点滅を表示の状態からやり直す（キー入力やカーソルの移動のあと）。
-    private func restartBlink() {
+    func restartBlink() {
         blinkVisible = true
         let shouldBlink = hasKeyboardFocus && (cursor?.blinking ?? false) && (cursor?.visible ?? false)
         guard shouldBlink else {
@@ -660,7 +852,7 @@ public final class TerminalView: NSView {
         let background: ColorRGB
     }
 
-    private func cgColor(_ color: ColorRGB, alpha: CGFloat = 1) -> CGColor {
+    func cgColor(_ color: ColorRGB, alpha: CGFloat = 1) -> CGColor {
         let key = RGBAKey(color: color, alpha: alpha)
         if let cached = colorCache[key] { return cached }
         let value = CGColor(
@@ -671,24 +863,50 @@ public final class TerminalView: NSView {
     }
 }
 
+extension KeyInput.Modifiers {
+    /// `NSEvent.modifierFlags` から作る。
+    public init(_ flags: NSEvent.ModifierFlags) {
+        self = []
+        if flags.contains(.shift) { insert(.shift) }
+        if flags.contains(.control) { insert(.control) }
+        if flags.contains(.option) { insert(.option) }
+        if flags.contains(.command) { insert(.command) }
+        if flags.contains(.capsLock) { insert(.capsLock) }
+    }
+}
+
+extension KeyStroke {
+    /// `NSEvent`（keyDown / keyUp）から作る。
+    public init(event: NSEvent, phase: Phase, isComposing: Bool) {
+        let isKey = event.type == .keyDown || event.type == .keyUp
+        self.init(
+            phase: phase,
+            keyCode: event.keyCode,
+            characters: isKey ? event.characters : "",
+            charactersIgnoringModifiers: isKey ? event.charactersIgnoringModifiers : "",
+            modifiers: KeyInput.Modifiers(event.modifierFlags),
+            isComposing: isComposing
+        )
+    }
+}
+
 extension KeyInput {
-    /// `NSEvent`（keyDown）から作る。
-    public init?(event: NSEvent) {
-        guard event.type == .keyDown || event.type == .keyUp else { return nil }
-        var modifiers: KeyInput.Modifiers = []
-        let flags = event.modifierFlags
-        if flags.contains(.shift) { modifiers.insert(.shift) }
-        if flags.contains(.control) { modifiers.insert(.control) }
-        if flags.contains(.option) { modifiers.insert(.option) }
-        if flags.contains(.command) { modifiers.insert(.command) }
-        if flags.contains(.capsLock) { modifiers.insert(.capsLock) }
+    /// `NSEvent`（keyDown / keyUp）から作る。
+    /// - Parameter text: キーが作った文字（`insertText` で届いたもの）。nil なら `NSEvent.characters`
+    public init?(event: NSEvent, text: String? = nil) {
+        let action: Action
+        switch event.type {
+        case .keyDown: action = event.isARepeat ? .repeat : .press
+        case .keyUp: action = .release
+        default: return nil
+        }
         guard let input = KeyInput.mac(
             keyCode: event.keyCode,
-            characters: event.characters,
+            characters: text ?? event.characters,
             charactersIgnoringModifiers: event.charactersIgnoringModifiers,
             unshiftedCharacters: event.characters(byApplyingModifiers: []),
-            modifiers: modifiers,
-            isRepeat: event.type == .keyDown && event.isARepeat
+            modifiers: Modifiers(event.modifierFlags),
+            action: action
         ) else {
             return nil
         }

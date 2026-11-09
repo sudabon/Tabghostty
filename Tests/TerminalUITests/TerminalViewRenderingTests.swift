@@ -40,11 +40,28 @@ import TerminalCore
         abs(Int(a.r) - Int(b.r)) + abs(Int(a.g) - Int(b.g)) + abs(Int(a.b) - Int(b.b))
     }
 
-    private func render(_ text: String, palette: Palette) async throws -> Rendered {
+    private func render(_ text: String, palette: Palette, selectColumns: ClosedRange<Int>? = nil) async throws -> Rendered {
         let sink = RecordingSink()
         let controller = try TerminalController(sid: "s1", cols: 40, rows: 4, maxScrollback: 10, colors: palette.terminalColors, sink: sink)
         await controller.attach()
         await controller.receiveReplay(Array(text.utf8), done: true)
+        if let selectColumns {
+            // 1 行目の列をドラッグで選択する。
+            let surface = MouseSurface(
+                width: 800, height: 200, cellWidth: 16, cellHeight: 34, paddingTop: 8, paddingBottom: 8,
+                paddingLeft: 8, paddingRight: 8, columns: 40
+            )
+            func input(_ kind: SelectionInput.Kind, _ column: Int, edge: Bool) -> SelectionInput {
+                SelectionInput(
+                    kind: kind, cell: GridPoint(x: column, y: 0),
+                    x: Double(8 + column * 16 + (edge ? 15 : 2)), y: 25, surface: surface
+                )
+            }
+            controller.enqueueSelection(input(.press(timeNanoseconds: 1, repeatIntervalNanoseconds: 1, repeatDistance: 1), selectColumns.lowerBound, edge: false))
+            controller.enqueueSelection(input(.drag, selectColumns.upperBound, edge: true))
+            controller.enqueueSelection(input(.release, selectColumns.upperBound, edge: true))
+            await controller.flushInput()
+        }
 
         let view = TerminalView(fontFamily: "Menlo", fontSize: 14, palette: palette)
         view.controller = controller
@@ -83,5 +100,18 @@ import TerminalCore
         #expect(rendered.inked(col: 0, row: 0, width: 2) > 20)
         #expect(rendered.inked(col: 2, row: 0) > 10)
         #expect(rendered.inked(col: 3, row: 0) == 0)
+    }
+
+    // spec: terminal-clipboard「Text selection」— 選択範囲は配色の選択色（dark #264f78、light #add6ff）で塗る。
+    @Test(arguments: ["light", "dark"])
+    func selectionUsesTheSchemeSelectionColor(scheme: String) async throws {
+        let palette: Palette = scheme == "light" ? .light : .dark
+        let expected = ColorRGB(hex: scheme == "light" ? 0xadd6ff : 0x264f78)
+        #expect(palette.selection == expected)
+        let rendered = try await render("hello world", palette: palette, selectColumns: 0...4)
+        let cellPixels = rendered.metrics.widthPx * rendered.metrics.heightPx
+        // 選択したセル（空白の多い部分）は選択色。選択していないセルには選択色が無い。
+        #expect(rendered.count(col: 0, row: 0, width: 5) { Self.distance($0, expected) < 12 } > cellPixels * 2)
+        #expect(rendered.count(col: 6, row: 0, width: 5) { Self.distance($0, expected) < 12 } == 0)
     }
 }

@@ -12,4 +12,7 @@ public enum TerminalEffect: Equatable, Sendable {
     case titleChanged
     /// OSC 9 / OSC 777 のデスクトップ通知。通知はデーモンの `notify` フレームに任せるので、表示には使わない。
     case desktopNotification(title: String, body: String)
+    /// OSC 52（または OSC 1337 Copy / OSC 5522）による、標準のクリップボードへのテキストの書き込み。
+    /// live のときだけ `NSPasteboard` に書き、replay 中は捨てる（phase2 design D6）。
+    case clipboardWrite(String)
 }
