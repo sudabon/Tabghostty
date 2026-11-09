@@ -1,0 +1,18 @@
+# libghostty-vt の取得元とピン留め。scripts/fetch-libghostty.sh が読む（シェルの変数代入として source する）。
+#
+# 調査結果（2026-11-09、タグ vt-1.0.0 の PACKAGING-LIBGHOSTTY.md）:
+# - 配布形態: 公式のビルド済み XCFramework（ghostty-vt-VERSION.xcframework.zip）がある。Zig でのビルドは不要。
+#   （ソースからビルドする場合は libghostty-vt-VERSION.tar.gz + -deps.tar.gz と Zig 0.17.x が必要）
+# - 配布場所: https://release.files.ghostty.org/libghostty-vt/VERSION/ のみ（GitHub Releases には tip しかない）
+# - 署名方式: 各ファイルに minisign の .minisig が付く。SHA256SUMS とその .minisig もある。
+#   公開鍵は Ghostty 本体のリリースと同じもの。
+#
+# バージョンを上げるときは LIBGHOSTTY_VERSION を変え、LIBGHOSTTY_SHA256 を空にしてから
+# `bash scripts/fetch-libghostty.sh --pin` を実行する（署名を検証した SHA256SUMS から値を書き込む）。
+
+LIBGHOSTTY_VERSION=1.0.0
+LIBGHOSTTY_DISTRIBUTION=prebuilt-xcframework
+LIBGHOSTTY_BASE_URL=https://release.files.ghostty.org/libghostty-vt/${LIBGHOSTTY_VERSION}
+LIBGHOSTTY_ARTIFACT=ghostty-vt-${LIBGHOSTTY_VERSION}.xcframework.zip
+LIBGHOSTTY_MINISIGN_PUBKEY=RWQlAjJC23149WL2sEpT/l0QKy7hMIFhYdQOFy0Z7z7PbneUgvlsnYcV
+LIBGHOSTTY_SHA256=2c32b7409b2b6c2ef6cfd606526de357762ad458bdc27134ad074e86506a8bc2
