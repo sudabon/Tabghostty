@@ -91,6 +91,7 @@
 - `scrollWheel(with:)` では、`hasPreciseScrollingDeltas` のときはピクセル量を蓄積し、セルの高さごとに 1 行として換算する。それ以外のときは、行数をそのまま使う。
 - 振り分けは spec の順序どおり（マウス報告 → alternate screen なら矢印キー → viewport）。矢印キーのシーケンスはキーエンコーダで作るので、application cursor mode にも従う。
 - viewport を動かしたら、その範囲を全部 dirty にして再描画する。新しい出力があっても viewport は動かさない（ライブラリの既定に従う。違っていたら Swift 側で位置を保持する）。
+- 上に動かせるのは、最新の `scrollback_lines` 行まで（`VTTerminal.scrollbackRows`）。libghostty はページ単位でしか削除しないので、それより古い行が内部に残っていても見せない（Phase 1 の spec: terminal-engine「Configurable scrollback limit」）。
 
 ### D6. OSC 52 と effect
 

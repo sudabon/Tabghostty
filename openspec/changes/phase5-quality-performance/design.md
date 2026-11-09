@@ -81,6 +81,7 @@ TerminalView (NSView, layer-backed, CAMetalLayer)
 ### D5. 検索
 
 - ライブラリに検索の API がある場合（Phase 0 の対応表で確認）はそれを使う。無い場合は、フォーマッタ（plain）でスクロールバック全体をテキストにし、行ごとに大文字小文字を区別せずに検索する。その場合は、行番号と列の範囲から一致箇所を求める。
+- 検索の対象は、画面と最新の `scrollback_lines` 行まで（`VTTerminal.scrollbackRows`）。libghostty の内部にそれより古い行が残っていても、一致に含めない（Phase 1 の spec: terminal-engine「Configurable scrollback limit」）。
 - 検索バーは `NSSearchField` を `TerminalView` の上に重ねる。結果の強調は装飾のパイプラインで描く。
 - 新しい出力が来たときの再検索は、200 ms のデバウンスをかけて行う。
 

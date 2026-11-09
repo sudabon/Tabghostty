@@ -31,7 +31,7 @@
 
 - [ ] 3.1 マウスエンコーダのラッパーと、座標の変換（ビューの座標 → セル座標 / device pixel 座標）を作る。座標の変換（パディング、Retina）と、SGR 1006 でのクリック → `ESC[<0;10;5M` / `m` をテストで確認する
 - [ ] 3.2 `mouseDown` / `mouseUp` / `mouseDragged` / `mouseMoved` / `rightMouse*` / `otherMouse*` を実装する（Shift を押しているときと replay 中は報告しない）。any-event のときは tracking area で移動を拾う。`vim` で `:set mouse=a` にして、クリックでカーソルが動くことを確認する（要手動確認）
-- [ ] 3.3 スクロールを実装する（design D5。precise delta の蓄積、マウス報告 → alternate screen なら矢印キー → viewport の順で振り分け）。振り分けの判定と蓄積の計算を純粋関数にしてテストで確認する。`less` で矢印キーになること、`htop` でホイールが報告されること、シェルでスクロールバックが見えることを確認する（要手動確認）
+- [ ] 3.3 スクロールを実装する（design D5。precise delta の蓄積、マウス報告 → alternate screen なら矢印キー → viewport の順で振り分け）。振り分けの判定と蓄積の計算を純粋関数にしてテストで確認する。viewport を上に動かせるのが最新の `scrollback_lines` 行まで（`VTTerminal.scrollbackRows`）であることもテストで確認する。`less` で矢印キーになること、`htop` でホイールが報告されること、シェルでスクロールバックが見えることを確認する（要手動確認）
 
 ## 4. 選択とコピー（spec: terminal-clipboard）
 
