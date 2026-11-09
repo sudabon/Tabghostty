@@ -1,0 +1,4 @@
+# webtabinal の .gitignore と同じ（ビルド成果物と、埋め込む Web 版の画面）
+bin/
+internal/static/dist/*
+!internal/static/dist/.gitkeep

@@ -1,0 +1,24 @@
+[?1049h[H[2J
+
+
+
+Would you like to run the following command?
+
+Environment: local
+
+Reason: May I run the focused Go test packages using the Go build cache outside the workspace?
+
+$ gofmt -w internal/httpapi/profile_test.go internal/profile/*.go internal/httpapi/profile.go
+  internal/httpapi/routes.go internal/app/app.go internal/users/*.go internal/projectmember/*.go
+  internal/casereg/*.go internal/imageasset/*.go internal/session/*.go internal/server/*.go
+  && go test ./internal/profile ./internal/imageasset ./internal/casereg ./internal/users
+  ./internal/projectmember ./internal/httpapi ./internal/session ./internal/server
+
+  1. Yes, proceed (y)
+› 2. Yes, and don't ask again for commands that start with `gofmt -w internal/httpapi/profile_test.go
+     internal/profile/*.go internal/httpapi/profile.go internal/httpapi/routes.go internal/app/app.go
+     internal/users/*.go internal/projectmember/*.go internal/casereg/*.go internal/imageasset/*.go
+     internal/session/*.go internal/server/*.go internal/config/*.go internal/agentdetect/*.go
+     && go test ./internal/profile ./internal/imageasset ./internal/casereg ./internal/users
+     ./internal/projectmember ./internal/httpapi ./internal/session ./internal/server` (p)
+  3. No, and tell Codex what to do differently (esc)

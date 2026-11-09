@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "command": "claude"
+  },
+  "steps": [
+    {
+      "name": "feed",
+      "byte_start": 0,
+      "byte_end": 112,
+      "advance_ms": 120,
+      "expect": {
+        "agent_id": "claude",
+        "state": "working",
+        "signal": "screen",
+        "change_count": 2
+      },
+      "output_bytes": 4
+    }
+  ]
+}

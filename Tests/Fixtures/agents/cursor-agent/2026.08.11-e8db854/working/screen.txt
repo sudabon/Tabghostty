@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Cursor Agent
+ generating response
+ compiling workspace files for the current turn
+

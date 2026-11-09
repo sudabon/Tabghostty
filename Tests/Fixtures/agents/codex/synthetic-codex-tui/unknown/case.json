@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "command": "codex"
+  },
+  "steps": [
+    {
+      "name": "feed",
+      "byte_start": 0,
+      "byte_end": 93,
+      "advance_ms": 1620,
+      "expect": {
+        "agent_id": "codex",
+        "state": "idle",
+        "signal": "screen",
+        "change_count": 1
+      },
+      "output_bytes": 4
+    }
+  ]
+}

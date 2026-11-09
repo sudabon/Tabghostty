@@ -29,5 +29,26 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.vscode/
+
+# CodingAgent
+.claude/
+.codex/
+.cursor/
+.agents/
+
+# Cursor
+.cursorrules
+.cursorignore
+.cursorindexingignore
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# libghostty-vt (scripts/fetch-libghostty.sh で取得。git 管理外)
+Vendor/*.xcframework
+Vendor/tmp/
+
+# .app の出力先
+build/

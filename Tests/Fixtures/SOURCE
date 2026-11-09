@@ -1,0 +1,4 @@
+repository: tabghostty daemon/（フィクスチャのもとは webtabinal。daemon/UPSTREAM.md）
+path: daemon/tests/fixtures/agents
+commit: faced204186bbac45bdc7c4e4f401734cff52bf7
+reference_screens: 21

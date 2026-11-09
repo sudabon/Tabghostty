@@ -5,6 +5,8 @@
 - 想定読者: 実装者本人、または Claude Code などのコーディングエージェント
 - 作成日: 2026-11-08
 
+> **Tabghostty での読み替え（2026-11-09 追記）**: この指示書は `webtabinal/native/` を前提に書かれている。Tabghostty では、リポジトリ直下に読み替え、デーモンは webtabinal に残す構成で実装した。ただし、Phase 6 で方針を変え、webtabinal のデーモンを `daemon/` に取り込み、そこからビルドしたものをアプリに同梱している（webtabinal のリポジトリは変更しない。取り込み元は `daemon/UPSTREAM.md`）。
+
 ---
 
 ## 0. この指示書のゴール
@@ -445,6 +447,8 @@ native-test:
 ### Phase 6（任意）: デーモン側エミュレータの libghostty-vt 化
 
 目的: サーバー側の画面モデル（エージェント検出の入力）とクライアント表示を同じエンジンにして、検出のずれを無くす。
+
+> **2026-11-09 の変更**: webtabinal は変更しないことにした。そのため、デーモンを Tabghostty の `daemon/` に取り込み、以下の作業はその中で行う。Tabghostty.app に同梱するデーモンは `daemon/` から `ghostty` タグでビルドする。この節の図と表にある「webtabinal は変更しない」「Phase 6 で `internal/vtscreen` に追加」は、`daemon/` に読み替える。経緯と詳細は `openspec/changes/phase6-daemon-ghostty-screen` と `daemon/UPSTREAM.md` にある。
 
 作業:
 1. `internal/vtscreen/` に `ghostty.go` を追加し、`Screen` インタフェース（`Feed` / `Resize` / `Snapshot` / `Close`）を `go.mitchellh.com/libghostty` で実装する。

@@ -1,0 +1,39 @@
+{
+  "id": "claude",
+  "display_name": "Claude Code",
+  "schema_version": 1,
+  "match": {
+    "executables": ["claude"],
+    "command_patterns": ["(^|/)claude(\\s|$)"]
+  },
+  "screen": {
+    "bottom_lines": 15,
+    "buffer": "active",
+    "states": {
+      "blocked": [
+        {"id": "approval", "pattern": "Do you want to"},
+        {"id": "numbered-choice", "pattern": "❯\\s+1\\."},
+        {"id": "waiting-input", "pattern": "waiting for (your )?input"}
+      ],
+      "working": [
+        {"id": "interrupt", "pattern": "esc to interrupt"},
+        {"id": "spinner", "pattern": "[⠁⠂⠄⡀⢀⠠⠐⠈]"},
+        {"id": "background", "pattern": "✻.+still running"}
+      ],
+      "idle": [
+        {"id": "prompt", "pattern": "^\\s*(❯|>)\\s*$"}
+      ]
+    }
+  },
+  "authority": {
+    "blocked": ["screen"],
+    "working": ["screen", "activity"],
+    "idle": ["screen+quiescence", "osc"]
+  },
+  "osc_authoritative": true,
+  "quiescence_ms": 1500,
+  "activity_window_ms": 1000,
+  "activity_min_bytes": 32,
+  "verified_against": ["synthetic-claude-code-tui", "2.1.239"],
+  "notes": "Patterns are calibrated from reviewed synthetic streams in tests/fixtures/agents/claude/synthetic-claude-code-tui and from a captured Claude Code 2.1.239 background-execution line reconstructed in tests/fixtures/agents/claude/2.1.239."
+}

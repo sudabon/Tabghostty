@@ -1,0 +1,45 @@
+{
+  "id": "codex",
+  "display_name": "Codex",
+  "schema_version": 1,
+  "match": {
+    "executables": ["codex"],
+    "command_patterns": ["(^|/)codex(\\s|$)"]
+  },
+  "screen": {
+    "bottom_lines": 15,
+    "buffer": "active",
+    "states": {
+      "blocked": [
+        {"id": "approval", "pattern": "Allow this command"},
+        {"id": "approval-want", "pattern": "Do you want to"},
+        {"id": "approval-would", "pattern": "Would you like to (run the following command|make the following edits|grant these permissions)"},
+        {"id": "approval-choice", "pattern": "^\\s*(›\\s*)?[0-9]+\\.\\s+(Yes|No), "},
+        {"id": "waiting-input", "pattern": "waiting for (your )?input"}
+      ],
+      "blocked_suppressed_by": [
+        {"id": "status-interrupt", "pattern": "esc to interr?upt"}
+      ],
+      "working": [
+        {"id": "interrupt", "pattern": "esc to interr?upt"},
+        {"id": "status-working", "pattern": "Working \\([0-9]+[smh]"},
+        {"id": "thinking", "pattern": "(Thinking|Working)\\.\\.\\."},
+        {"id": "spinner", "pattern": "[⠁⠂⠄⡀⢀⠠⠐⠈]"}
+      ],
+      "idle": [
+        {"id": "prompt", "pattern": "^\\s*(›|>)\\s*$"}
+      ]
+    }
+  },
+  "authority": {
+    "blocked": ["screen"],
+    "working": ["screen", "activity"],
+    "idle": ["screen+quiescence", "osc"]
+  },
+  "osc_authoritative": true,
+  "quiescence_ms": 1500,
+  "activity_window_ms": 1000,
+  "activity_min_bytes": 32,
+  "verified_against": ["synthetic-codex-tui", "0.149.0"],
+  "notes": "Patterns are calibrated from reviewed synthetic streams in tests/fixtures/agents/codex/synthetic-codex-tui and from reconstructed codex-cli 0.149.0 approval screens in tests/fixtures/agents/codex/0.149.0. approval-would matches the three approval headers shipped in the 0.149.0 binary; approval-choice anchors on the numbered Yes/No option list, which stays inside the bottom 15 lines even when a long command wraps the header out of view. Codex hides its status line while an approval modal is open, so a live 'Working (… esc to interrupt)' line below every blocked hit means the hit is stale transcript text; blocked_suppressed_by vetoes blocked in that case."
+}

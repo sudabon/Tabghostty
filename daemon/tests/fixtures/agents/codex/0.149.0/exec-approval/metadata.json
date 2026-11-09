@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "agent": "codex",
+  "version": "0.149.0",
+  "scenario": "exec-approval",
+  "rows": 24,
+  "columns": 120,
+  "term": "xterm-256color",
+  "locale": "en_US.UTF-8",
+  "platform": "darwin",
+  "capture_tool_version": "record-agent-fixture/1",
+  "reviewed": true,
+  "osc": {
+    "osc0": false,
+    "osc9": false,
+    "osc99": false,
+    "osc777": false
+  },
+  "notes": "Reconstructed codex-cli 0.149.0 exec approval popup. The whole popup fits in the bottom 15 lines. Prompt wording verified against strings in the shipped codex-cli 0.149.0 binary."
+}
