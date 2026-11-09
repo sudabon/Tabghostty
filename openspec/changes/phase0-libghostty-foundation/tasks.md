@@ -7,7 +7,7 @@
 
 ## 2. libghostty-vt の取得とリンク
 
-- [ ] 2.1 libghostty-vt 1.0 の配布形態を調べる（lib.ghostty.org、GitHub Releases、`PACKAGING-LIBGHOSTTY.md`）。次の 3 点を `scripts/libghostty.lock` に記録し、lock がコミットされていることを確認する
+- [x] 2.1 libghostty-vt 1.0 の配布形態を調べる（lib.ghostty.org、GitHub Releases、`PACKAGING-LIBGHOSTTY.md`）。次の 3 点を `scripts/libghostty.lock` に記録し、lock がコミットされていることを確認する
   - 公式 XCFramework の有無（無ければソース tarball と、必要な Zig のバージョン）
   - SHA-256
   - 署名方式
@@ -45,7 +45,7 @@
 
 ## 5. ドキュメント
 
-- [ ] 5.1 README に「開発環境」の節を追加し、手順どおりに実行すると fresh clone で `make deps && make test` が通ることを確認する。書く内容は次のとおり
+- [x] 5.1 README に「開発環境」の節を追加し、手順どおりに実行すると fresh clone で `make deps && make test` が通ることを確認する。書く内容は次のとおり
   - 必要なもの（Command Line Tools、Swift 6。Zig は 2.1 の結果に応じて記載）
   - `make deps`、`make build`、`make test`
   - Tabghostty が webtabinal デーモンのネイティブクライアントであること（Phase 1 以降で必要になる旨）
