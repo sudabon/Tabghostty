@@ -110,11 +110,23 @@ public actor TerminalController {
     /// 新しい出力のあとの再検索を予約している。
     private var researchScheduled = false
     /// 再検索の結果を知らせる（検索バーの `n / m`）。
-    private nonisolated let searchObserver = OSAllocatedUnfairLock<(@Sendable (SearchStatus) -> Void)?>(initialState: nil)
+    private nonisolated let searchObserver = OSAllocatedUnfairLock<SearchObserver?>(initialState: nil)
     /// 新しい出力が来てから、再検索するまでの時間（その間の出力はまとめて 1 回で検索する）。
     public static let researchDelay: Duration = .milliseconds(200)
     /// 描画すべき変化が起きたときに呼ぶ（表示しているビューが、止めていた display link を再開する。phase5 design D3）。
-    private nonisolated let renderObserver = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
+    private nonisolated let renderObserver = OSAllocatedUnfairLock<RenderObserver?>(initialState: nil)
+
+    // ロックに入れる observer。クロージャをそのまま `OSAllocatedUnfairLock` の State にすると、`withLock { $0 }` で
+    // 読むたびに、reabstraction thunk で包み直したクロージャが書き戻される（inout の State の write-back）。
+    // 呼ぶときのスタックが読んだ回数だけ深くなり、出力が数千回届くと協調スレッドのスタックが溢れてクラッシュした。
+    // struct に入れておけば包み直されない。
+    private struct RenderObserver: Sendable {
+        let notify: @Sendable () -> Void
+    }
+
+    private struct SearchObserver: Sendable {
+        let notify: @Sendable (SearchStatus) -> Void
+    }
     /// 入力の振り分けに使うモード（ビューから同期的に読む）。端末に書き込むたびに更新する。
     private nonisolated let modesState = OSAllocatedUnfairLock(initialState: TerminalInputModes())
     /// 次のスナップショットを全行にするか。
@@ -646,7 +658,7 @@ public actor TerminalController {
     /// 描画すべき変化が無い状態から、ある状態になったときに呼ぶ処理を設定する（nil で外す）。
     /// どのスレッドからも呼ばれるので、メインスレッドに移ってから処理する。
     public nonisolated func setRenderObserver(_ observer: (@Sendable () -> Void)?) {
-        renderObserver.withLock { $0 = observer }
+        renderObserver.withLock { $0 = observer.map(RenderObserver.init(notify:)) }
     }
 
     /// 描画用のスナップショット（変化した行だけ）を作る。
@@ -745,7 +757,7 @@ public actor TerminalController {
 
     /// 新しい出力のあとに検索し直した結果を知らせる（nil で外す）。どのスレッドからも呼ばれる。
     public nonisolated func setSearchObserver(_ observer: (@Sendable (SearchStatus) -> Void)?) {
-        searchObserver.withLock { $0 = observer }
+        searchObserver.withLock { $0 = observer.map(SearchObserver.init(notify:)) }
     }
 
     private func moveSearch(by delta: Int) -> SearchStatus {
@@ -802,7 +814,7 @@ public actor TerminalController {
 
     private func publishSearchStatus() {
         let status = searchStatus
-        searchObserver.withLock { $0 }?(status)
+        searchObserver.withLock { $0 }?.notify(status)
     }
 
     /// viewport の行ごとの一致の列（スナップショットに入れる）。
@@ -913,7 +925,7 @@ public actor TerminalController {
     }
 
     private func notifyRenderObserver() {
-        renderObserver.withLock { $0 }?()
+        renderObserver.withLock { $0 }?.notify()
     }
 
     /// 同期出力の開始と終了を、描画の保留に反映する（phase5 design D4）。
