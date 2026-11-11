@@ -96,6 +96,30 @@ public enum GridGeometry {
         return GridPoint(x: min(max(0, column), max(0, cols - 1)), y: min(max(0, row), max(0, rows - 1)))
     }
 
+    /// 選択の自動スクロールで、最も速くなる端からの距離（point）。
+    static let autoscrollMaxDistance: CGFloat = 50
+    /// 選択の自動スクロールで、1 回に動かす行数の上限。
+    static let autoscrollMaxRows = 15
+
+    /// 選択をドラッグしてビューの上下の端を越えているとき、自動スクロールの 1 回に動かす行数。
+    /// 端を越えた距離に比例し、越えてすぐは 1 行、`autoscrollMaxDistance` 以上は `autoscrollMaxRows` 行（xterm.js と同じ）。
+    /// - Parameters:
+    ///   - pointY: ポインタの y（point、ビューの上端が 0）
+    ///   - viewHeight: ビューの高さ（point）
+    /// - Returns: 動かす行数。ビューの中なら 0
+    public static func autoscrollRows(pointY: CGFloat, viewHeight: CGFloat) -> Int {
+        let distance: CGFloat
+        if pointY < 0 {
+            distance = -pointY
+        } else if pointY > viewHeight {
+            distance = pointY - viewHeight
+        } else {
+            return 0
+        }
+        let ratio = min(distance, autoscrollMaxDistance) / autoscrollMaxDistance
+        return 1 + Int((ratio * CGFloat(autoscrollMaxRows - 1)).rounded())
+    }
+
     /// マウスエンコーダと選択のジェスチャーに渡す、描画領域の大きさ（device pixel）。
     public static func mouseSurface(viewSize: CGSize, cell: CellMetrics, cols: Int, rows: Int) -> MouseSurface {
         let scale = cell.scale

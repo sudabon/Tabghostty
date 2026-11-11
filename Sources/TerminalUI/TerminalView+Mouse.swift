@@ -201,10 +201,10 @@ extension TerminalView {
 
     // MARK: - 選択の自動スクロール
 
-    /// ドラッグがビューの上下の端を越えている間、タイマーで viewport を 1 行ずつ動かして選択を伸ばす。
+    /// ドラッグがビューの上下の端を越えている間、タイマーで viewport を動かして選択を伸ばす。
+    /// 1 回に動かす行数は、端を越えた距離で決める（`GridGeometry.autoscrollRows`）。
     private func updateAutoscroll(_ point: CGPoint) {
-        let outside = point.y < 0 || point.y > bounds.height
-        guard outside else {
+        guard GridGeometry.autoscrollRows(pointY: point.y, viewHeight: bounds.height) > 0 else {
             stopAutoscroll()
             return
         }
@@ -216,12 +216,16 @@ extension TerminalView {
         autoscrollTimer = timer
     }
 
-    private func autoscrollTick() {
+    func autoscrollTick() {
         guard pointerGesture == .select, let controller else {
             stopAutoscroll()
             return
         }
-        controller.enqueueSelection(selectionInput(.autoscrollTick, at: lastDragPoint))
+        // ライブラリの 1 回の tick は viewport を 1 行動かすので、動かす行数の分だけ送る。
+        let rows = GridGeometry.autoscrollRows(pointY: lastDragPoint.y, viewHeight: bounds.height)
+        for _ in 0..<rows {
+            controller.enqueueSelection(selectionInput(.autoscrollTick, at: lastDragPoint))
+        }
     }
 
     func stopAutoscroll() {

@@ -275,6 +275,27 @@ import TerminalCore
         #expect(fixture.pasteboard.string(forType: .string) == "sentinel")
     }
 
+    // 端を大きく越えてドラッグすると、自動スクロールの 1 回で複数行動いて選択が伸びる。
+    @Test func autoscrollMovesSeveralRowsPerTickFarPastTheEdge() async throws {
+        let output = (0..<100).map { String(format: "line%02d", $0) }.joined(separator: "\r\n")
+        let fixture = try await makeFixture(output: output)
+        let view = fixture.view
+        // 最下行（line99）の先頭を押し、ビューの上端より 60 pt 上までドラッグする。
+        view.mouseDown(with: mouse(.leftMouseDown, view, column: 0, row: 5))
+        let outside = NSPoint(x: GridGeometry.padding + view.metrics.width / 2, y: -60)
+        let drag = NSEvent.mouseEvent(
+            with: .leftMouseDragged, location: view.convert(outside, to: nil), modifierFlags: [], timestamp: 1,
+            windowNumber: view.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        )!
+        view.mouseDragged(with: drag)
+        // タイマーを待たずに 1 回だけ進める。
+        view.stopAutoscroll()
+        view.autoscrollTick()
+        let text = await fixture.controller.selectionText()
+        // ドラッグで line94（viewport の先頭）まで、1 回の tick で 15 行上の line79 まで伸びる。
+        #expect(text.hasPrefix("line79\n"))
+    }
+
     // MARK: - マウスの報告と選択の使い分け（spec: terminal-mouse）
 
     // Scenario: Click in vim / Shift overrides mouse reporting

@@ -119,4 +119,23 @@ import TerminalCore
         #expect(try terminal.encodeMouse(press) == Array("\u{1b}[<0;10;5M".utf8))
         #expect(try terminal.encodeMouse(release) == Array("\u{1b}[<0;10;5m".utf8))
     }
+
+    // 選択の自動スクロールの速さ。端を越えた距離に比例し、越えてすぐは 1 行、50 pt 以上は 15 行（xterm.js と同じ）。
+    @Test func autoscrollRowsGrowWithTheDistancePastTheEdge() {
+        let height: CGFloat = 520
+        // ビューの中では動かさない。
+        #expect(GridGeometry.autoscrollRows(pointY: 0, viewHeight: height) == 0)
+        #expect(GridGeometry.autoscrollRows(pointY: 260, viewHeight: height) == 0)
+        #expect(GridGeometry.autoscrollRows(pointY: height, viewHeight: height) == 0)
+        // 上の端を越えた。
+        #expect(GridGeometry.autoscrollRows(pointY: -1, viewHeight: height) == 1)
+        #expect(GridGeometry.autoscrollRows(pointY: -25, viewHeight: height) == 8)
+        #expect(GridGeometry.autoscrollRows(pointY: -50, viewHeight: height) == 15)
+        #expect(GridGeometry.autoscrollRows(pointY: -500, viewHeight: height) == 15)
+        // 下の端を越えた。
+        #expect(GridGeometry.autoscrollRows(pointY: height + 1, viewHeight: height) == 1)
+        #expect(GridGeometry.autoscrollRows(pointY: height + 25, viewHeight: height) == 8)
+        #expect(GridGeometry.autoscrollRows(pointY: height + 50, viewHeight: height) == 15)
+        #expect(GridGeometry.autoscrollRows(pointY: height + 500, viewHeight: height) == 15)
+    }
 }
