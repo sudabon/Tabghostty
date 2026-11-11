@@ -20,7 +20,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private(set) var shell: TabShellController?
     private var failureView: StartupFailureView?
 
-    init() {
+    /// - Parameter frameAutosaveName: 枠を保存する名前。テストでは、ほかのウィンドウとぶつからない名前を渡す。
+    init(frameAutosaveName: String = MainWindowController.autosaveName) {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.initialSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -30,11 +31,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.title = WindowTitle.appName
         window.minSize = NSSize(width: 320, height: 200)
         window.isReleasedWhenClosed = false
+        // 保存された枠が無いときの位置（あれば、下で名前を設定したときに上書きされる）。
         window.center()
-        // 前回の位置と大きさを覚えておき、次の起動で戻す。
-        window.setFrameAutosaveName(Self.autosaveName)
         super.init(window: window)
         window.delegate = self
+        // 前回の位置と大きさを覚えておき、次の起動で戻す。名前は必ず super.init の後に、コントローラに設定する。
+        // NSWindowController(window:) は、ウィンドウの自動保存名を自分の windowFrameAutosaveName（空）で
+        // 上書きするので、先にウィンドウに設定しても消え、枠が保存されない。
+        windowFrameAutosaveName = frameAutosaveName
 
         container.autoresizingMask = [.width, .height]
         window.contentView = container
